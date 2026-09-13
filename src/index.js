@@ -41,6 +41,12 @@ async function startBot() {
 
   try {
     logger.info(`Starting ${config.botName}...`);
+    logger.info(`Session Storage Path: "${config.sessionDir}"`);
+
+    // Ensure session directory exists
+    if (!fs.existsSync(config.sessionDir)) {
+      fs.mkdirSync(config.sessionDir, { recursive: true });
+    }
 
     // 1. Initialize Web Control Panel (if not already started)
     await qrServer.start({
@@ -69,8 +75,9 @@ async function startBot() {
     // 2. Load commands dynamically
     await commandHandler.loadCommands();
 
-    // 3. Multi-file auth state setup
+    // 3. Multi-file auth state setup using resolved persistent session path
     const { state, saveCreds } = await useMultiFileAuthState(config.sessionDir);
+
 
     // 4. Fetch latest WA Web version with fallback
     let version = [2, 3000, 1015901307];

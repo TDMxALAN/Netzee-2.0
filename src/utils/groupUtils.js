@@ -1,4 +1,5 @@
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
+import logger from './logger.js';
 
 /**
  * groupUtils.js
@@ -15,7 +16,19 @@ import { jidNormalizedUser } from '@whiskeysockets/baileys';
 export async function getBotAdminStatus(sock, groupJid) {
   try {
     const metadata = await sock.groupMetadata(groupJid);
-    const botJid = jidNormalizedUser(sock.user?.id);
+    const rawBotId = sock.user?.id;
+    const botJid = jidNormalizedUser(rawBotId);
+
+    // ── DEBUG: log raw bot JID and all participant entries ──
+    logger.info({
+      rawBotId,
+      normalizedBotJid: botJid,
+      participants: metadata.participants.map(p => ({
+        id: p.id,
+        normalized: jidNormalizedUser(p.id),
+        admin: p.admin
+      }))
+    }, '[groupUtils] getBotAdminStatus debug');
 
     const botParticipant = metadata.participants.find(p =>
       jidNormalizedUser(p.id) === botJid
@@ -25,8 +38,11 @@ export async function getBotAdminStatus(sock, groupJid) {
       botParticipant?.admin === 'admin' ||
       botParticipant?.admin === 'superadmin';
 
+    logger.info({ botJid, foundParticipant: botParticipant, isAdmin }, '[groupUtils] result');
+
     return { isAdmin, metadata };
-  } catch {
+  } catch (err) {
+    logger.error({ err }, '[groupUtils] getBotAdminStatus error');
     return { isAdmin: false, metadata: null };
   }
 }

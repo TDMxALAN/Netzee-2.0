@@ -1,7 +1,8 @@
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  Browsers
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import config from './config/config.js';
@@ -10,6 +11,8 @@ import qrServer from './server/qrServer.js';
 import commandHandler from './handlers/commandHandler.js';
 import handleIncomingMessage from './handlers/messageHandler.js';
 
+let globalSock = null;
+
 /**
  * Main Application Initializer
  * Starts the Express QR Web Server, loads commands, and handles the Baileys WhatsApp Web socket lifecycle.
@@ -17,8 +20,15 @@ import handleIncomingMessage from './handlers/messageHandler.js';
 async function startBot() {
   logger.info(`Starting ${config.botName}...`);
 
-  // 1. Start Web Server for Railway PORT to expose live QR Code UI
-  await qrServer.start();
+  // 1. Start Web Server for Railway PORT to expose live QR Code UI & Pairing Code
+  await qrServer.start(async (phoneNumber) => {
+    if (globalSock && !globalSock.authState.creds.registered) {
+      logger.info(`Requesting pairing code for phone number: ${phoneNumber}`);
+      const code = await globalSock.requestPairingCode(phoneNumber);
+      return code;
+    }
+    throw new Error('Bot is already connected or socket is not initialized.');
+  });
 
   // 2. Load all command modules from src/commands/
   await commandHandler.loadCommands();
@@ -30,15 +40,23 @@ async function startBot() {
   const { version, isLatest } = await fetchLatestBaileysVersion();
   logger.info(`Using Baileys WA version v${version.join('.')}, isLatest: ${isLatest}`);
 
-  // 5. Create WhatsApp Web Socket connection
+  // 5. Create WhatsApp Web Socket connection with standard Linux Chrome browser & optimized connection flags
   const sock = makeWASocket({
     version,
     auth: state,
     logger: baileysLogger,
-    printQRInTerminal: true, // Also print to terminal logs for Railway log viewer
-    browser: [config.botName, 'Chrome', '1.0.0'],
-    generateHighQualityLinkPreview: true
+    printQRInTerminal: true,
+    browser: Browsers.ubuntu('Chrome'), // Standard WhatsApp browser identification
+    syncFullHistory: false, // Prevents history sync timeout after scanning QR code
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 60000,
+    keepAliveIntervalMs: 15000,
+    generateHighQualityLinkPreview: true,
+    markOnlineOnConnect: true
   });
+
+  globalSock = sock;
+
 
   // Save credentials whenever auth state updates
   sock.ev.on('creds.update', saveCreds);

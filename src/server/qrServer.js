@@ -5,9 +5,9 @@ import logger from '../utils/logger.js';
 import { normalizePhoneNumber } from '../utils/phoneUtils.js';
 
 /**
- * QR Code Web Server Module
+ * QR Code & Pairing Code Web Server Module
  * Provides a lightweight Express web application that binds to Railway's assigned PORT.
- * Generates and serves a real-time web dashboard displaying high-contrast QR codes and 8-digit Pairing Codes.
+ * Generates and serves high-contrast QR codes, 8-digit pairing codes, and a Session Reset action.
  */
 class QRServer {
   constructor() {
@@ -16,7 +16,8 @@ class QRServer {
     this.status = 'INITIALIZING'; // INITIALIZING, QR_READY, CONNECTING, CONNECTED, DISCONNECTED
     this.userInfo = null;
     this.server = null;
-    this.pairingCodeRequestHandler = null;
+    this.pairingHandler = null;
+    this.resetHandler = null;
     
     this.setupMiddleware();
     this.setupRoutes();
@@ -28,7 +29,7 @@ class QRServer {
   }
 
   /**
-   * Defines web routes for status check, high-contrast QR image API, pairing code API, and main Web UI.
+   * Defines web routes for status check, QR image API, pairing code API, reset session API, and main UI.
    */
   setupRoutes() {
     // Serve status as JSON
@@ -49,7 +50,6 @@ class QRServer {
       }
 
       try {
-        // High contrast black-on-white QR with standard margin and error correction level for seamless camera scanning
         const qrImageDataUrl = await QRCode.toDataURL(this.currentQR, {
           margin: 4,
           width: 360,
@@ -78,16 +78,33 @@ class QRServer {
         return res.status(400).json({ error: 'Invalid phone number format.' });
       }
 
-      if (!this.pairingCodeRequestHandler) {
-        return res.status(500).json({ error: 'Pairing code service not ready.' });
+      if (!this.pairingHandler) {
+        return res.status(500).json({ error: 'Pairing code service not initialized.' });
       }
 
       try {
-        const code = await this.pairingCodeRequestHandler(digits);
+        const code = await this.pairingHandler(digits);
         res.json({ success: true, code, phone: digits });
       } catch (err) {
         logger.error({ err }, 'Error requesting pairing code');
         res.status(500).json({ error: err.message || 'Failed to request pairing code.' });
+      }
+    });
+
+    // Reset Session endpoint to clear broken keys and generate fresh QR/Pairing code
+    this.app.post('/reset', async (req, res) => {
+      if (!this.resetHandler) {
+        return res.status(500).json({ error: 'Reset handler not ready.' });
+      }
+
+      try {
+        this.currentQR = null;
+        this.status = 'INITIALIZING';
+        await this.resetHandler();
+        res.json({ success: true, message: 'Session reset. Generating fresh QR & Pairing Code...' });
+      } catch (err) {
+        logger.error({ err }, 'Error resetting session');
+        res.status(500).json({ error: 'Failed to reset session.' });
       }
     });
 
@@ -122,7 +139,7 @@ class QRServer {
   }
 
   /**
-   * Renders the interactive dark mode Web UI HTML page with QR Code and Pairing Code support.
+   * Renders the interactive Web UI HTML dashboard.
    */
   renderDashboardHtml() {
     return `<!DOCTYPE html>
@@ -137,7 +154,7 @@ class QRServer {
   <style>
     :root {
       --bg: #0b0f19;
-      --card-bg: rgba(17, 24, 39, 0.85);
+      --card-bg: rgba(17, 24, 39, 0.88);
       --accent: #25d366;
       --accent-glow: rgba(37, 211, 102, 0.25);
       --text: #f3f4f6;
@@ -149,40 +166,28 @@ class QRServer {
       background: radial-gradient(circle at 50% 0%, #1e293b 0%, var(--bg) 75%);
       color: var(--text);
       min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
       padding: 20px;
     }
     .container {
-      width: 100%;
-      max-width: 500px;
+      width: 100%; max-width: 500px;
       background: var(--card-bg);
       backdrop-filter: blur(16px);
       border: 1px solid var(--border);
-      border-radius: 24px;
-      padding: 32px;
+      border-radius: 24px; padding: 32px;
       box-shadow: 0 20px 50px rgba(0,0,0,0.5);
       text-align: center;
     }
     .header { margin-bottom: 20px; }
     .logo {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 24px;
-      font-weight: 800;
-      color: #ffffff;
-      margin-bottom: 6px;
+      display: inline-flex; align-items: center; gap: 10px;
+      font-size: 24px; font-weight: 800; color: #ffffff; margin-bottom: 6px;
     }
     .logo-icon {
-      width: 38px; height: 38px;
-      background: var(--accent);
-      border-radius: 12px;
-      display: flex; align-items: center; justify-content: center;
-      color: #000; font-weight: bold;
-      box-shadow: 0 0 20px var(--accent-glow);
+      width: 38px; height: 38px; background: var(--accent);
+      border-radius: 12px; display: flex; align-items: center; justify-content: center;
+      color: #000; font-weight: bold; box-shadow: 0 0 20px var(--accent-glow);
     }
     .subtitle { color: var(--text-muted); font-size: 14px; }
     .badge {
@@ -194,7 +199,7 @@ class QRServer {
     .badge.QR_READY { background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); }
     .badge.CONNECTED { background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }
     .badge.CONNECTING { background: rgba(234, 179, 8, 0.15); color: #facc15; border: 1px solid rgba(234, 179, 8, 0.3); }
-    .badge.INITIALIZING { background: rgba(107, 114, 128, 0.15); color: #9ca3af; border: 1px solid rgba(107, 114, 128, 0.3); }
+    .badge.INITIALIZING, .badge.DISCONNECTED { background: rgba(107, 114, 128, 0.15); color: #9ca3af; border: 1px solid rgba(107, 114, 128, 0.3); }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
     
     .tab-buttons {
@@ -210,8 +215,7 @@ class QRServer {
     .tab-content.active { display: block; }
 
     .qr-box {
-      background: #ffffff;
-      padding: 16px; border-radius: 16px;
+      background: #ffffff; padding: 16px; border-radius: 16px;
       display: inline-block; margin: 0 auto 16px auto;
       box-shadow: 0 10px 30px rgba(0,0,0,0.4);
       min-width: 280px; min-height: 280px;
@@ -220,8 +224,7 @@ class QRServer {
     .qr-box img { max-width: 100%; height: auto; display: block; }
     
     .pairing-box {
-      background: rgba(255,255,255,0.04);
-      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04); border: 1px solid var(--border);
       border-radius: 16px; padding: 20px; margin-bottom: 16px;
     }
     .input-group { display: flex; gap: 8px; margin-bottom: 12px; }
@@ -240,6 +243,14 @@ class QRServer {
       margin-top: 12px; border: 1px dashed var(--accent); display: none;
     }
 
+    .action-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 16px; background: rgba(239, 68, 68, 0.15); color: #f87171;
+      border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 10px;
+      font-size: 12px; font-weight: 600; cursor: pointer; margin-top: 14px;
+    }
+    .action-btn:hover { background: rgba(239, 68, 68, 0.25); }
+
     .instructions {
       font-size: 13px; color: var(--text-muted); line-height: 1.5;
       background: rgba(255,255,255,0.03); padding: 12px; border-radius: 12px; border: 1px solid var(--border);
@@ -254,7 +265,7 @@ class QRServer {
         <div class="logo-icon">WA</div>
         <span>${config.botName}</span>
       </div>
-      <p class="subtitle">Railway Live Connection Dashboard</p>
+      <p class="subtitle">Railway Control Panel</p>
     </div>
 
     <div id="status-badge" class="badge INITIALIZING">
@@ -263,8 +274,8 @@ class QRServer {
     </div>
 
     <div class="tab-buttons" id="tab-controls">
-      <button class="tab-btn active" onclick="switchTab('qr-tab')">Scan QR Code</button>
-      <button class="tab-btn" onclick="switchTab('pair-tab')">8-Digit Pairing Code</button>
+      <button class="tab-btn active" onclick="switchTab(event, 'qr-tab')">Scan QR Code</button>
+      <button class="tab-btn" onclick="switchTab(event, 'pair-tab')">8-Digit Pairing Code</button>
     </div>
 
     <!-- QR TAB -->
@@ -275,7 +286,7 @@ class QRServer {
         </div>
       </div>
       <div class="instructions">
-        Open WhatsApp on your phone → <b>Linked Devices</b> → <b>Link a Device</b> and scan the high-contrast QR code.
+        Open WhatsApp on phone → <b>Linked Devices</b> → <b>Link a Device</b> and scan the high-contrast QR code.
       </div>
     </div>
 
@@ -291,18 +302,22 @@ class QRServer {
         <p id="pair-error" style="color:#f87171; font-size:12px; margin-top:8px; display:none;"></p>
       </div>
       <div class="instructions">
-        In WhatsApp → <b>Linked Devices</b> → <b>Link with Phone Number</b> and enter the 8-digit code shown above.
+        In WhatsApp → <b>Linked Devices</b> → <b>Link with Phone Number</b> and type the 8-digit code shown above.
       </div>
+    </div>
+
+    <div id="reset-section">
+      <button onclick="resetSession()" class="action-btn">🔄 Reset Session & Generate Fresh QR/Code</button>
     </div>
 
     <div class="footer">Hosted on Railway • Port ${config.port}</div>
   </div>
 
   <script>
-    function switchTab(tabId) {
+    function switchTab(evt, tabId) {
       document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      event.target.classList.add('active');
+      evt.target.classList.add('active');
       document.getElementById(tabId).classList.add('active');
     }
 
@@ -340,6 +355,18 @@ class QRServer {
       }
     }
 
+    async function resetSession() {
+      if (!confirm('This will clear broken session data and regenerate a fresh QR & Pairing Code. Proceed?')) return;
+      try {
+        const res = await fetch('/reset', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || 'Session reset successfully.');
+        location.reload();
+      } catch (err) {
+        alert('Failed to reset session.');
+      }
+    }
+
     let lastQR = '';
     async function checkStatus() {
       try {
@@ -356,11 +383,12 @@ class QRServer {
         if (data.status === 'CONNECTED') {
           document.getElementById('tab-controls').style.display = 'none';
           document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+          document.getElementById('reset-section').style.display = 'none';
           qrContainer.innerHTML = \`
             <div style="padding: 30px; color: #4ade80;">
               <svg style="width:64px;height:64px;margin-bottom:12px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
               <h3 style="color:#ffffff;margin-bottom:6px;">Bot Connected & Active!</h3>
-              <p style="color:#9ca3af;font-size:13px;">User ID: \${data.userInfo?.id || 'Active'}</p>
+              <p style="color:#9ca3af;font-size:13px;">User ID: \${data.userInfo?.id || 'Active Session'}</p>
             </div>
           \`;
           qrContainer.style.display = 'block';
@@ -386,13 +414,17 @@ class QRServer {
 
   /**
    * Starts the Express web server listening on Railway PORT.
-   * @param {Function} pairingHandler - Callback function to generate pairing code
+   * @param {object} handlers - Handler object with onRequestPairingCode and onResetSession callbacks
    */
-  start(pairingHandler = null) {
-    this.pairingCodeRequestHandler = pairingHandler;
+  start(handlers = {}) {
+    if (handlers.onRequestPairingCode) this.pairingHandler = handlers.onRequestPairingCode;
+    if (handlers.onResetSession) this.resetHandler = handlers.onResetSession;
+
+    if (this.server) return Promise.resolve(this.server);
+
     return new Promise((resolve) => {
       this.server = this.app.listen(config.port, () => {
-        logger.info(`Web QR & Pairing Server running on port ${config.port}`);
+        logger.info(`Web QR & Control Panel running on port ${config.port}`);
         resolve(this.server);
       });
     });

@@ -1,0 +1,29 @@
+{
+  "name": "netzee-whatsapp-bot",
+  "version": "2.0.0",
+  "description": "Modular WhatsApp bot built with Baileys, ready for Railway deployment with live QR Web UI.",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node test/testPhoneUtils.js"
+  },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "baileys",
+    "railway",
+    "qrcode"
+  ],
+  "author": "Netzee",
+  "license": "ISC",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.13",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "libphonenumber-js": "^1.11.19",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4"
+  }
+}

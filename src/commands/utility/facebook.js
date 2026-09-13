@@ -33,8 +33,8 @@ export default {
     const inputUrl = args[0];
 
     try {
-      // Send processing message
-      await reply('⏳ *Fetching Facebook video in highest quality... Please wait.*');
+      // Send processing reaction
+      await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } });
 
       // Extract high quality video download URL
       const result = await downloadFacebookVideo(inputUrl);

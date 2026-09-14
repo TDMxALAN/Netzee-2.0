@@ -13,8 +13,30 @@ export default {
    * @param {object} ctx - Execution context containing sock, msg, reply, args
    */
   async execute(ctx) {
+    const frames = [
+      '○○○○○',
+      '●○○○○',
+      '●●○○○',
+      '●●●○○',
+      '●●●●○',
+      '●●●●●'
+    ];
+
+    const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const start = Date.now();
-    const sentMsg = await ctx.reply('🏓 Pinging bot server...');
+
+    let sentMsg = await ctx.reply(frames[0]);
+    await delay(500);
+
+    for (let i = 1; i < frames.length; i++) {
+      if (sentMsg?.key) {
+        await ctx.sock.sendMessage(ctx.remoteJid, { text: frames[i], edit: sentMsg.key });
+      } else {
+        sentMsg = await ctx.reply(frames[i]);
+      }
+      await delay(500);
+    }
+
     const latency = Date.now() - start;
 
     const responseText = `🤖 *${ctx.sock.user?.name || 'Netzee Bot'} Online*\n` +
@@ -22,6 +44,10 @@ export default {
       `📌 *Chat Type:* ${ctx.isGroup ? 'Group Chat' : 'Direct Message'}\n` +
       `✨ *Prefix Used:* "${ctx.usedPrefix || 'None (DM)'}"`;
 
-    await ctx.reply(responseText);
+    if (sentMsg?.key) {
+      await ctx.sock.sendMessage(ctx.remoteJid, { text: responseText, edit: sentMsg.key });
+    } else {
+      await ctx.reply(responseText);
+    }
   }
 };

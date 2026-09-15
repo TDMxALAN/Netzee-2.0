@@ -39,6 +39,11 @@ export async function handleIncomingMessage(sock, messageInfo) {
       return;
     }
 
+    // Ignore reaction messages to avoid infinite reaction loops
+    if (msg.message.reactionMessage) {
+      return;
+    }
+
     const remoteJid = msg.key.remoteJid;
     const isGroup = remoteJid.endsWith('@g.us');
 

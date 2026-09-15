@@ -1,5 +1,5 @@
 import { parsePhoneNumber } from '../../utils/phoneUtils.js';
-import { isAdmin } from '../../utils/adminStore.js';
+import { isAdmin, isSuperAdmin } from '../../utils/adminStore.js';
 import { setReactRule, removeReactRule, getAllReactRules } from '../../utils/reactStore.js';
 
 /**
@@ -33,7 +33,8 @@ export default {
       : remoteJid;
 
     // ── Authorization check: Bot Admin or Super Admin only ──────────────────
-    if (!isAdmin(senderJid)) {
+    //!edited by user
+    if (!isAdmin(senderJid) || !isSuperAdmin(senderJid)) {
       return await reply(
         '🚫 *Unauthorized.*\n' +
         'This command is restricted to *Bot Admins* and the *Super Admin*.'
@@ -63,7 +64,7 @@ export default {
     // ── 1. Subcommand: SET ────────────────────────────────────────────────────
     if (subCommand === 'set') {
       const fullSetInput = args.slice(1).join(' ');
-      
+
       // Parse format: <number> - <emoji>
       const dashIndex = fullSetInput.indexOf('-');
       if (dashIndex === -1) {

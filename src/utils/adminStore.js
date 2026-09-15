@@ -1,0 +1,156 @@
+import config from '../config/config.js';
+import { normalizePhoneNumber } from './phoneUtils.js';
+
+/**
+ * adminStore.js
+ * Bot-level admin management (not group-level).
+ *
+ * Hierarchy:
+ *  • Super Admin  — hardcoded (+94722666467). Cannot be removed. Cannot promote others to super admin.
+ *  • Bot Admin    — numbers added via .promote. Can be removed via .demote.
+ *
+ * Who can manage admins?
+ *  • The super admin
+ *  • The bot's own number (identified via sock.user at runtime)
+ *
+ * Note: Admin list is in-memory only. On restart the list resets to super admin only.
+ * If you need persistence across restarts, swap the Set for a file/db backed store.
+ */
+
+// ── Super Admin ──────────────────────────────────────────────────────────────
+// Normalize once at startup to ensure consistent comparison (no + or spaces).
+const SUPER_ADMIN_DIGITS = normalizePhoneNumber(
+  process.env.SUPER_ADMIN || config.ownerNumber || '94722666467'
+);
+
+// ── Bot Admins (mutable) ──────────────────────────────────────────────────────
+// Stored as normalized digit-only strings (e.g. "94722666467").
+const botAdmins = new Set();
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the normalized digit-only string for a phone number or JID.
+ * Accepts: "+94 72 266 6467", "94722666467", "0722666467", "94722666467@s.whatsapp.net"
+ *
+ * @param {string} input
+ * @returns {string|null}
+ */
+function toDigits(input) {
+  if (!input || typeof input !== 'string') return null;
+  // Strip JID suffix if present (e.g. @s.whatsapp.net, @c.us, :device suffix)
+  const withoutJid = input.split('@')[0].split(':')[0];
+  return normalizePhoneNumber(withoutJid);
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the normalized super admin digit string.
+ * @returns {string}
+ */
+export function getSuperAdminDigits() {
+  return SUPER_ADMIN_DIGITS;
+}
+
+/**
+ * Checks if a given number/JID is the super admin.
+ *
+ * @param {string} input - Raw number or JID
+ * @returns {boolean}
+ */
+export function isSuperAdmin(input) {
+  const digits = toDigits(input);
+  return !!digits && digits === SUPER_ADMIN_DIGITS;
+}
+
+/**
+ * Checks if a given number/JID is a promoted bot admin (not super admin).
+ *
+ * @param {string} input - Raw number or JID
+ * @returns {boolean}
+ */
+export function isBotAdmin(input) {
+  const digits = toDigits(input);
+  return !!digits && botAdmins.has(digits);
+}
+
+/**
+ * Checks if a given number/JID has any admin privilege (super admin OR bot admin).
+ *
+ * @param {string} input - Raw number or JID
+ * @returns {boolean}
+ */
+export function isAdmin(input) {
+  return isSuperAdmin(input) || isBotAdmin(input);
+}
+
+/**
+ * Checks if the sender is authorized to manage the bot's admin list.
+ * Authorized parties: super admin OR the bot's own number.
+ *
+ * @param {string} senderInput   - Sender JID or phone number
+ * @param {string|null} botJid   - The bot's own JID from sock.user?.id (optional)
+ * @returns {boolean}
+ */
+export function canManageAdmins(senderInput, botJid = null) {
+  if (isSuperAdmin(senderInput)) return true;
+  if (botJid) {
+    const botDigits = toDigits(botJid);
+    const senderDigits = toDigits(senderInput);
+    if (botDigits && senderDigits && botDigits === senderDigits) return true;
+  }
+  return false;
+}
+
+/**
+ * Promotes a phone number to bot admin.
+ * Returns 'already_admin' | 'is_super_admin' | 'promoted'
+ *
+ * @param {string} input - Raw phone number
+ * @returns {'already_admin' | 'is_super_admin' | 'promoted' | 'invalid'}
+ */
+export function promoteAdmin(input) {
+  const digits = toDigits(input);
+  if (!digits) return 'invalid';
+  if (digits === SUPER_ADMIN_DIGITS) return 'is_super_admin';
+  if (botAdmins.has(digits)) return 'already_admin';
+  botAdmins.add(digits);
+  return 'promoted';
+}
+
+/**
+ * Demotes a phone number from bot admin.
+ * Returns 'not_admin' | 'is_super_admin' | 'demoted'
+ *
+ * @param {string} input - Raw phone number
+ * @returns {'not_admin' | 'is_super_admin' | 'demoted' | 'invalid'}
+ */
+export function demoteAdmin(input) {
+  const digits = toDigits(input);
+  if (!digits) return 'invalid';
+  if (digits === SUPER_ADMIN_DIGITS) return 'is_super_admin';
+  if (!botAdmins.has(digits)) return 'not_admin';
+  botAdmins.delete(digits);
+  return 'demoted';
+}
+
+/**
+ * Returns the current list of promoted bot admins (excludes super admin).
+ *
+ * @returns {string[]} Array of normalized digit strings
+ */
+export function listBotAdmins() {
+  return Array.from(botAdmins);
+}
+
+export default {
+  getSuperAdminDigits,
+  isSuperAdmin,
+  isBotAdmin,
+  isAdmin,
+  canManageAdmins,
+  promoteAdmin,
+  demoteAdmin,
+  listBotAdmins
+};

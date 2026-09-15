@@ -4,6 +4,8 @@ import logger from '../utils/logger.js';
 import { findBannedWord, getFilterConfig, removeWordsByIndex } from '../utils/filterStore.js';
 import { getBotAdminStatus, isSenderAdmin } from '../utils/groupUtils.js';
 import { getBannedListSession, setBannedListSession, clearBannedListSession } from '../utils/sessionStore.js';
+import { getReactEmoji } from '../utils/reactStore.js';
+import { normalizePhoneNumber } from '../utils/phoneUtils.js';
 
 /**
  * Message Handler Module
@@ -14,6 +16,7 @@ import { getBannedListSession, setBannedListSession, clearBannedListSession } fr
  * Additionally handles:
  * - Word filter: Deletes group messages containing banned words (when filter is ON).
  * - Banned-list reply sessions: Lets admins reply with a number to remove a word.
+ * - Auto Reaction: Reacts with a designated emoji to every message sent by specified target numbers in any chat.
  */
 export async function handleIncomingMessage(sock, messageInfo) {
   try {
@@ -38,6 +41,34 @@ export async function handleIncomingMessage(sock, messageInfo) {
 
     const remoteJid = msg.key.remoteJid;
     const isGroup = remoteJid.endsWith('@g.us');
+
+    // ════════════════════════════════════════════════════════════════
+    // AUTO EMOJI REACTION — check sender phone number in any chat
+    // ════════════════════════════════════════════════════════════════
+    const senderJid = isGroup
+      ? (msg.key.participant || msg.participant || remoteJid)
+      : remoteJid;
+
+    const senderDigits = normalizePhoneNumber(senderJid.split('@')[0].split(':')[0]);
+    if (senderDigits) {
+      const targetEmoji = getReactEmoji(senderDigits);
+      if (targetEmoji) {
+        try {
+          await sock.sendMessage(remoteJid, {
+            react: {
+              text: targetEmoji,
+              key: msg.key
+            }
+          });
+          logger.info(
+            { senderDigits, targetEmoji, remoteJid },
+            'Auto-reacted to message'
+          );
+        } catch (err) {
+          logger.warn({ err, senderDigits }, 'Failed to send auto reaction emoji');
+        }
+      }
+    }
 
     // Extract text content from various message types (text, extended text, image/video captions)
     const body = (

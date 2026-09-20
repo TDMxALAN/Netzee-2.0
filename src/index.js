@@ -42,10 +42,14 @@ async function startBot() {
   try {
     logger.info(`Starting ${config.botName}...`);
     logger.info(`Session Storage Path: "${config.sessionDir}"`);
+    logger.info(`User Data Storage Path: "${config.userDataDir}"`);
 
-    // Ensure session directory exists
+    // Ensure session and user data directories exist
     if (!fs.existsSync(config.sessionDir)) {
       fs.mkdirSync(config.sessionDir, { recursive: true });
+    }
+    if (!fs.existsSync(config.userDataDir)) {
+      fs.mkdirSync(config.userDataDir, { recursive: true });
     }
 
     // 1. Initialize Web Control Panel (if not already started)

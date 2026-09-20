@@ -1,12 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import config from '../config/config.js';
 import { parsePhoneNumber } from './phoneUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_DIR = path.join(__dirname, '../data');
+const DATA_DIR = config.userDataDir || path.join(__dirname, '../data');
 const STORE_FILE = path.join(DATA_DIR, 'reactStore.json');
 
 /**

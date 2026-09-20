@@ -1,12 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import config from '../config/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Store file lives next to utils/ in src/data/
-const DATA_DIR = path.join(__dirname, '../data');
+// Store file lives in config.userDataDir (/data/userdata)
+const DATA_DIR = config.userDataDir || path.join(__dirname, '../data');
 const STORE_FILE = path.join(DATA_DIR, 'filterStore.json');
 
 /**

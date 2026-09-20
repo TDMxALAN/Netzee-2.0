@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import config from '../config/config.js';
 import { normalizePhoneNumber } from './phoneUtils.js';
 
@@ -13,9 +15,11 @@ import { normalizePhoneNumber } from './phoneUtils.js';
  *  • The super admin
  *  • The bot's own number (identified via sock.user at runtime)
  *
- * Note: Admin list is in-memory only. On restart the list resets to super admin only.
- * If you need persistence across restarts, swap the Set for a file/db backed store.
+ * Persistence: Saved in config.userDataDir/adminStore.json (/data/userdata/adminStore.json)
  */
+
+const DATA_DIR = config.userDataDir || './data/userdata';
+const STORE_FILE = path.join(DATA_DIR, 'adminStore.json');
 
 // ── Super Admin ──────────────────────────────────────────────────────────────
 // Normalize once at startup to ensure consistent comparison (no + or spaces).
@@ -23,9 +27,48 @@ const SUPER_ADMIN_DIGITS = normalizePhoneNumber(
   process.env.SUPER_ADMIN || config.ownerNumber || '94722666467'
 );
 
-// ── Bot Admins (mutable) ──────────────────────────────────────────────────────
+// ── Bot Admins (mutable & persistent) ─────────────────────────────────────────
 // Stored as normalized digit-only strings (e.g. "94722666467").
 const botAdmins = new Set();
+
+function ensureStore() {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    if (!fs.existsSync(STORE_FILE)) {
+      fs.writeFileSync(STORE_FILE, JSON.stringify([], null, 2), 'utf-8');
+    }
+  } catch (e) {
+    // Ignore error
+  }
+}
+
+function loadStore() {
+  ensureStore();
+  try {
+    if (fs.existsSync(STORE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(STORE_FILE, 'utf-8'));
+      if (Array.isArray(data)) {
+        data.forEach(d => botAdmins.add(d));
+      }
+    }
+  } catch (e) {
+    // Ignore error
+  }
+}
+
+function saveStore() {
+  ensureStore();
+  try {
+    fs.writeFileSync(STORE_FILE, JSON.stringify(Array.from(botAdmins), null, 2), 'utf-8');
+  } catch (e) {
+    // Ignore error
+  }
+}
+
+// Initial load
+loadStore();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -116,6 +159,7 @@ export function promoteAdmin(input) {
   if (digits === SUPER_ADMIN_DIGITS) return 'is_super_admin';
   if (botAdmins.has(digits)) return 'already_admin';
   botAdmins.add(digits);
+  saveStore();
   return 'promoted';
 }
 
@@ -132,6 +176,7 @@ export function demoteAdmin(input) {
   if (digits === SUPER_ADMIN_DIGITS) return 'is_super_admin';
   if (!botAdmins.has(digits)) return 'not_admin';
   botAdmins.delete(digits);
+  saveStore();
   return 'demoted';
 }
 

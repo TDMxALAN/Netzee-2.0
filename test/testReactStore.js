@@ -33,10 +33,8 @@ console.log('  Rules after remove:', getAllReactRules());
 // Clean up store file created during test
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const STORE_FILE = path.join(__dirname, '../src/data/reactStore.json');
+import config from '../src/config/config.js';
+const STORE_FILE = path.join(config.userDataDir, 'reactStore.json');
 if (fs.existsSync(STORE_FILE)) {
   fs.unlinkSync(STORE_FILE);
 }

@@ -36,7 +36,7 @@ export default {
     }
 
     // ── Sender must be admin ──
-    const senderJid = msg.key.participant || msg.participant || remoteJid;
+    const senderJid = ctx.senderJid || msg.key.participant || msg.participant || remoteJid;
     if (!isSenderAdmin(metadata, senderJid)) {
       return await reply('🚫 Only *group admins* can view the banned word list.');
     }

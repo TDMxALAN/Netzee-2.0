@@ -28,9 +28,9 @@ export default {
 
     // ── Determine sender JID ──────────────────────────────────────────────────
     const isGroup = remoteJid.endsWith('@g.us');
-    const senderJid = isGroup
-      ? (msg.key.participant || msg.participant || remoteJid)
-      : remoteJid;
+    const senderJid = ctx.senderJid || (msg.key.fromMe
+      ? (sock?.user?.id || msg.key.participant || remoteJid)
+      : (isGroup ? (msg.key.participant || msg.participant || remoteJid) : remoteJid));
 
     // ── Authorization check ──────────────────────────────────────────────────
     const botJid = sock.user?.id || null;

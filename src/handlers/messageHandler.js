@@ -34,11 +34,6 @@ export async function handleIncomingMessage(sock, messageInfo) {
       return;
     }
 
-    // Ignore messages sent by the bot itself
-    if (msg.key.fromMe) {
-      return;
-    }
-
     // Ignore reaction messages to avoid infinite reaction loops
     if (msg.message.reactionMessage) {
       return;
@@ -47,13 +42,15 @@ export async function handleIncomingMessage(sock, messageInfo) {
     const remoteJid = msg.key.remoteJid;
     const isGroup = remoteJid.endsWith('@g.us');
 
+    // ── Determine sender JID ──────────────────────────────────────────────────
+    // For fromMe messages (self-chat or commands typed by bot owner), sender is the bot user.
+    const senderJid = msg.key.fromMe
+      ? (sock.user?.id || msg.key.participant || remoteJid)
+      : (isGroup ? (msg.key.participant || msg.participant || remoteJid) : remoteJid);
+
     // ════════════════════════════════════════════════════════════════
     // AUTO EMOJI REACTION — check sender phone number in any chat
     // ════════════════════════════════════════════════════════════════
-    const senderJid = isGroup
-      ? (msg.key.participant || msg.participant || remoteJid)
-      : remoteJid;
-
     const senderDigits = normalizePhoneNumber(senderJid.split('@')[0].split(':')[0]);
     if (senderDigits) {
       const targetEmoji = getReactEmoji(senderDigits);
@@ -290,6 +287,7 @@ export async function handleIncomingMessage(sock, messageInfo) {
       sock,
       msg,
       remoteJid,
+      senderJid,
       isGroup,
       body,
       args,

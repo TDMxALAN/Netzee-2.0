@@ -47,8 +47,10 @@ export async function handleIncomingMessage(sock, messageInfo) {
     // ── Determine sender JID ──────────────────────────────────────────────────
     // For fromMe messages (self-chat or commands typed by bot owner), sender is the bot user.
     const senderJid = isFromMe
-      ? (sock.user?.id || sock.user?.jid || msg.key.participant || remoteJid)
-      : (isGroup ? (msg.key.participant || msg.participant || remoteJid) : remoteJid);
+      ? (sock.user?.id || sock.user?.jid || msg.key.participantAlt || msg.key.participant || remoteJid)
+      : (isGroup
+          ? (msg.key.participantAlt || msg.key.participant || msg.participant || remoteJid)
+          : (msg.key.remoteJidAlt || remoteJid));
 
     // ════════════════════════════════════════════════════════════════
     // AUTO EMOJI REACTION — super admin (👑), bot admin (🧢), or custom rule

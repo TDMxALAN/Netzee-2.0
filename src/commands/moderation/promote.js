@@ -24,28 +24,44 @@ export default {
   category: 'moderation',
 
   async execute(ctx) {
-    const { sock, msg, remoteJid, args, reply } = ctx;
+    const { sock, msg, remoteJid, args, isFromMe, reply } = ctx;
 
     // ── Determine sender JID ──────────────────────────────────────────────────
     const isGroup = remoteJid.endsWith('@g.us');
-    const senderJid = ctx.senderJid || (msg.key.fromMe
-      ? (sock?.user?.id || msg.key.participant || remoteJid)
+    const senderJid = ctx.senderJid || (isFromMe
+      ? (sock?.user?.id || sock?.user?.jid || msg.key.participant || remoteJid)
       : (isGroup ? (msg.key.participant || msg.participant || remoteJid) : remoteJid));
 
     // ── Authorization check ──────────────────────────────────────────────────
-    const botJid = sock.user?.id || null;
-    if (!canManageAdmins(senderJid, botJid)) {
+    const botJid = sock.user?.id || sock.user?.jid || null;
+    if (!canManageAdmins(senderJid, botJid, isFromMe)) {
       return await reply(
         '🚫 *Unauthorized.*\n' +
         'Only the *super admin* or the *bot itself* can promote admins.'
       );
     }
 
-    // ── Require a phone number argument ──────────────────────────────────────
-    if (args.length === 0) {
+    // ── Determine target number from args, mention, or reply ────────────────
+    const contextInfo = msg.message?.extendedTextMessage?.contextInfo ||
+                        msg.message?.imageMessage?.contextInfo ||
+                        msg.message?.videoMessage?.contextInfo;
+
+    let targetInput = args.join(' ').trim();
+
+    if (!targetInput) {
+      if (contextInfo?.participant) {
+        targetInput = contextInfo.participant;
+      } else if (contextInfo?.mentionedJid && contextInfo.mentionedJid.length > 0) {
+        targetInput = contextInfo.mentionedJid[0];
+      }
+    } else if (contextInfo?.mentionedJid && contextInfo.mentionedJid.length > 0 && targetInput.startsWith('@')) {
+      targetInput = contextInfo.mentionedJid[0];
+    }
+
+    if (!targetInput) {
       return await reply(
         '❌ *No number provided.*\n\n' +
-        '*Usage:* `.promote <number>`\n\n' +
+        '*Usage:* `.promote <number>` or reply to a user\'s message\n\n' +
         '*Accepted formats:*\n' +
         '  • `+94 72 266 6467`\n' +
         '  • `94722666467`\n' +
@@ -54,12 +70,11 @@ export default {
     }
 
     // ── Parse & validate the phone number ────────────────────────────────────
-    const rawInput = args.join(' ');
-    const parsed = parsePhoneNumber(rawInput);
+    const parsed = parsePhoneNumber(targetInput);
 
     if (!parsed.isValid) {
       return await reply(
-        `❌ *Invalid phone number:* \`${rawInput}\`\n\n` +
+        `❌ *Invalid phone number:* \`${targetInput}\`\n\n` +
         '*Accepted formats:*\n' +
         '  • `+94 72 266 6467`\n' +
         '  • `94722666467`\n' +
@@ -89,7 +104,7 @@ export default {
 
       case 'invalid':
       default:
-        return await reply(`❌ Could not process number: \`${rawInput}\``);
+        return await reply(`❌ Could not process number: \`${targetInput}\``);
     }
   }
 };

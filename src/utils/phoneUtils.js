@@ -21,8 +21,20 @@ export function normalizePhoneNumber(input, defaultCountryCode = config.defaultC
     return null;
   }
 
-  // Remove spaces, plus signs, hyphens, brackets, and non-digit characters except leading
-  let digits = input.trim().replace(/[^\d]/g, '');
+  // Strip JID suffix (@s.whatsapp.net, @c.us etc.) and device ID (:14, :0 etc.)
+  let cleanedInput = input.trim();
+  if (cleanedInput.startsWith('@')) {
+    cleanedInput = cleanedInput.slice(1);
+  }
+  if (cleanedInput.includes('@')) {
+    cleanedInput = cleanedInput.split('@')[0];
+  }
+  if (cleanedInput.includes(':')) {
+    cleanedInput = cleanedInput.split(':')[0];
+  }
+
+  // Remove spaces, plus signs, hyphens, brackets, and non-digit characters
+  let digits = cleanedInput.replace(/[^\d]/g, '');
 
   if (!digits) {
     return null;

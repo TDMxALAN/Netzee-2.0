@@ -24,16 +24,17 @@ export default {
   category: 'moderation',
 
   async execute(ctx) {
-    const { sock, msg, remoteJid, args, reply } = ctx;
+    const { sock, msg, remoteJid, args, isFromMe, reply } = ctx;
 
     // ── Determine sender JID ──────────────────────────────────────────────────
     const isGroup = remoteJid.endsWith('@g.us');
-    const senderJid = ctx.senderJid || (msg.key.fromMe
-      ? (sock?.user?.id || msg.key.participant || remoteJid)
+    const senderJid = ctx.senderJid || (isFromMe
+      ? (sock?.user?.id || sock?.user?.jid || msg.key.participant || remoteJid)
       : (isGroup ? (msg.key.participant || msg.participant || remoteJid) : remoteJid));
 
     // ── Authorization check: Bot Admin or Super Admin only ──────────────────
-    if (!isAdmin(senderJid)) {
+    const botJid = sock?.user?.id || sock?.user?.jid || null;
+    if (!isAdmin(senderJid, isFromMe, botJid)) {
       return await reply(
         '🚫 *Unauthorized.*\n' +
         'This command is restricted to *Bot Admins* and the *Super Admin*.'

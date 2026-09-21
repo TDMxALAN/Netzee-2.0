@@ -1,5 +1,6 @@
 import { setFilterEnabled, getFilterConfig } from '../../utils/filterStore.js';
 import { getBotAdminStatus, isSenderAdmin } from '../../utils/groupUtils.js';
+import { isAdmin as isBotOrSuperAdmin } from '../../utils/adminStore.js';
 
 /**
  * !filter Command
@@ -8,7 +9,7 @@ import { getBotAdminStatus, isSenderAdmin } from '../../utils/groupUtils.js';
  *
  * Requirements:
  *  - Must be used in a group chat
- *  - Sender must be a group admin
+ *  - Sender must be a group admin or bot admin/super admin
  *  - Bot must be a group admin
  */
 export default {
@@ -18,7 +19,7 @@ export default {
   category: 'moderation',
 
   async execute(ctx) {
-    const { sock, msg, remoteJid, isGroup, args, reply } = ctx;
+    const { sock, msg, remoteJid, isGroup, isFromMe, args, reply } = ctx;
 
     // ── Group-only guard ──
     if (!isGroup) {
@@ -36,8 +37,9 @@ export default {
 
     // ── Sender must be admin ──
     const senderJid = ctx.senderJid || msg.key.participant || msg.participant || remoteJid;
-    if (!isSenderAdmin(metadata, senderJid)) {
-      return await reply('🚫 Only *group admins* can toggle the word filter.');
+    const botJid = sock.user?.id || sock.user?.jid || null;
+    if (!isSenderAdmin(metadata, senderJid) && !isBotOrSuperAdmin(senderJid, isFromMe, botJid)) {
+      return await reply('🚫 Only *group admins* or *bot admins* can toggle the word filter.');
     }
 
     const subCommand = (args[0] || '').toLowerCase();

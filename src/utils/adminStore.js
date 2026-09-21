@@ -73,17 +73,20 @@ loadStore();
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
- * Returns the normalized digit-only string for a phone number or JID.
- * Accepts: "+94 72 266 6467", "94722666467", "0722666467", "94722666467@s.whatsapp.net"
+ * Returns the normalized digit-only string for a phone number, JID, or mention.
+ * Accepts: "+94 72 266 6467", "94722666467", "0722666467", "94722666467@s.whatsapp.net", "@94722666467"
  *
  * @param {string} input
  * @returns {string|null}
  */
-function toDigits(input) {
+export function toDigits(input) {
   if (!input || typeof input !== 'string') return null;
-  // Strip JID suffix if present (e.g. @s.whatsapp.net, @c.us, :device suffix)
-  const withoutJid = input.split('@')[0].split(':')[0];
-  return normalizePhoneNumber(withoutJid);
+  const str = input.trim();
+  // Reject group JIDs and status broadcast
+  if (str.includes('@g.us') || str.includes('status@broadcast')) {
+    return null;
+  }
+  return normalizePhoneNumber(str);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -100,11 +103,18 @@ export function getSuperAdminDigits() {
  * Checks if a given number/JID is the super admin.
  *
  * @param {string} input - Raw number or JID
+ * @param {boolean} [isFromMe=false] - Whether the message is sent from the bot account itself
+ * @param {string|null} [botJid=null] - The bot's own JID
  * @returns {boolean}
  */
-export function isSuperAdmin(input) {
+export function isSuperAdmin(input, isFromMe = false, botJid = null) {
   const digits = toDigits(input);
-  return !!digits && digits === SUPER_ADMIN_DIGITS;
+  if (digits && digits === SUPER_ADMIN_DIGITS) return true;
+  if (isFromMe) {
+    const botDigits = botJid ? toDigits(botJid) : null;
+    if (botDigits && botDigits === SUPER_ADMIN_DIGITS) return true;
+  }
+  return false;
 }
 
 /**
@@ -122,10 +132,13 @@ export function isBotAdmin(input) {
  * Checks if a given number/JID has any admin privilege (super admin OR bot admin).
  *
  * @param {string} input - Raw number or JID
+ * @param {boolean} [isFromMe=false] - Whether the message is sent from the bot account itself
+ * @param {string|null} [botJid=null] - The bot's own JID
  * @returns {boolean}
  */
-export function isAdmin(input) {
-  return isSuperAdmin(input) || isBotAdmin(input);
+export function isAdmin(input, isFromMe = false, botJid = null) {
+  if (isFromMe) return true;
+  return isSuperAdmin(input, isFromMe, botJid) || isBotAdmin(input);
 }
 
 /**
@@ -134,10 +147,12 @@ export function isAdmin(input) {
  *
  * @param {string} senderInput   - Sender JID or phone number
  * @param {string|null} botJid   - The bot's own JID from sock.user?.id (optional)
+ * @param {boolean} [isFromMe=false] - Whether the message was typed on the bot's own account
  * @returns {boolean}
  */
-export function canManageAdmins(senderInput, botJid = null) {
-  if (isSuperAdmin(senderInput)) return true;
+export function canManageAdmins(senderInput, botJid = null, isFromMe = false) {
+  if (isFromMe) return true;
+  if (isSuperAdmin(senderInput, isFromMe, botJid)) return true;
   if (botJid) {
     const botDigits = toDigits(botJid);
     const senderDigits = toDigits(senderInput);
@@ -148,7 +163,7 @@ export function canManageAdmins(senderInput, botJid = null) {
 
 /**
  * Promotes a phone number to bot admin.
- * Returns 'already_admin' | 'is_super_admin' | 'promoted'
+ * Returns 'already_admin' | 'is_super_admin' | 'promoted' | 'invalid'
  *
  * @param {string} input - Raw phone number
  * @returns {'already_admin' | 'is_super_admin' | 'promoted' | 'invalid'}
@@ -165,7 +180,7 @@ export function promoteAdmin(input) {
 
 /**
  * Demotes a phone number from bot admin.
- * Returns 'not_admin' | 'is_super_admin' | 'demoted'
+ * Returns 'not_admin' | 'is_super_admin' | 'demoted' | 'invalid'
  *
  * @param {string} input - Raw phone number
  * @returns {'not_admin' | 'is_super_admin' | 'demoted' | 'invalid'}
@@ -190,6 +205,7 @@ export function listBotAdmins() {
 }
 
 export default {
+  toDigits,
   getSuperAdminDigits,
   isSuperAdmin,
   isBotAdmin,

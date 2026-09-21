@@ -6,6 +6,7 @@ import { getBotAdminStatus, isSenderAdmin } from '../utils/groupUtils.js';
 import { getBannedListSession, setBannedListSession, clearBannedListSession } from '../utils/sessionStore.js';
 import { getReactEmoji } from '../utils/reactStore.js';
 import { normalizePhoneNumber } from '../utils/phoneUtils.js';
+import { isSuperAdmin, isBotAdmin, toDigits } from '../utils/adminStore.js';
 
 /**
  * Message Handler Module
@@ -41,34 +42,43 @@ export async function handleIncomingMessage(sock, messageInfo) {
 
     const remoteJid = msg.key.remoteJid;
     const isGroup = remoteJid.endsWith('@g.us');
+    const isFromMe = !!msg.key.fromMe;
 
     // ── Determine sender JID ──────────────────────────────────────────────────
     // For fromMe messages (self-chat or commands typed by bot owner), sender is the bot user.
-    const senderJid = msg.key.fromMe
-      ? (sock.user?.id || msg.key.participant || remoteJid)
+    const senderJid = isFromMe
+      ? (sock.user?.id || sock.user?.jid || msg.key.participant || remoteJid)
       : (isGroup ? (msg.key.participant || msg.participant || remoteJid) : remoteJid);
 
     // ════════════════════════════════════════════════════════════════
-    // AUTO EMOJI REACTION — check sender phone number in any chat
+    // AUTO EMOJI REACTION — super admin (👑), bot admin (🧢), or custom rule
     // ════════════════════════════════════════════════════════════════
-    const senderDigits = normalizePhoneNumber(senderJid.split('@')[0].split(':')[0]);
-    if (senderDigits) {
-      const targetEmoji = getReactEmoji(senderDigits);
-      if (targetEmoji) {
-        try {
-          await sock.sendMessage(remoteJid, {
-            react: {
-              text: targetEmoji,
-              key: msg.key
-            }
-          });
-          logger.info(
-            { senderDigits, targetEmoji, remoteJid },
-            'Auto-reacted to message'
-          );
-        } catch (err) {
-          logger.warn({ err, senderDigits }, 'Failed to send auto reaction emoji');
-        }
+    const senderDigits = toDigits(senderJid);
+    const customEmoji = senderDigits ? getReactEmoji(senderDigits) : null;
+
+    let targetEmoji = customEmoji;
+    if (!targetEmoji) {
+      if (isSuperAdmin(senderJid, isFromMe, sock.user?.id)) {
+        targetEmoji = '👑';
+      } else if (isBotAdmin(senderJid)) {
+        targetEmoji = '🧢';
+      }
+    }
+
+    if (targetEmoji) {
+      try {
+        await sock.sendMessage(remoteJid, {
+          react: {
+            text: targetEmoji,
+            key: msg.key
+          }
+        });
+        logger.info(
+          { senderJid, senderDigits, targetEmoji, remoteJid },
+          'Auto-reacted to message'
+        );
+      } catch (err) {
+        logger.warn({ err, senderJid, targetEmoji }, 'Failed to send auto reaction emoji');
       }
     }
 
@@ -289,6 +299,7 @@ export async function handleIncomingMessage(sock, messageInfo) {
       remoteJid,
       senderJid,
       isGroup,
+      isFromMe,
       body,
       args,
       usedPrefix,

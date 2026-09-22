@@ -55,10 +55,11 @@ console.log('  Demoting test user:', demoteAdmin('94771234567@s.whatsapp.net'));
 console.log('  isBotAdmin(testUser) after demote:', isBotAdmin(testUser));
 console.log('  Current bot admins after demote:', listBotAdmins());
 
-// 4. canManageAdmins test
-console.log('\n4. canManageAdmins tests:');
+// 4. canManageAdmins & isSuperAdmin self-message tests
+console.log('\n4. canManageAdmins & isSuperAdmin tests:');
 console.log('  Super admin manage check:', canManageAdmins('94722666467@s.whatsapp.net'));
-console.log('  Self-message (isFromMe=true) check:', canManageAdmins('random_jid', null, true));
+console.log('  Self-message (isFromMe=true) check for non-super-admin bot:', isSuperAdmin('94701234567@s.whatsapp.net', true, '94701234567@s.whatsapp.net'));
+console.log('  Super admin +94722666467 check:', isSuperAdmin('94722666467@s.whatsapp.net', false, null));
 console.log('  Random user check (isFromMe=false):', canManageAdmins('94779998888@s.whatsapp.net', null, false));
 
 console.log('\n=== All Tests Finished ===');

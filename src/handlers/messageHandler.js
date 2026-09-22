@@ -50,37 +50,40 @@ export async function handleIncomingMessage(sock, messageInfo) {
       ? (sock.user?.id || sock.user?.jid || msg.key.participantAlt || msg.key.participant || remoteJid)
       : (isGroup
           ? (msg.key.participantAlt || msg.key.participant || msg.participant || remoteJid)
-          : (msg.key.remoteJidAlt || remoteJid));
+          : (msg.key.remoteJidAlt || remoteJid || msg.key.participantAlt || msg.key.participant));
 
     // ════════════════════════════════════════════════════════════════
     // AUTO EMOJI REACTION — super admin (👑), bot admin (🧢), or custom rule
     // ════════════════════════════════════════════════════════════════
-    const senderDigits = toDigits(senderJid);
-    const customEmoji = senderDigits ? getReactEmoji(senderDigits) : null;
+    // Ignore self messages for auto emoji reaction (bot should not react to its own messages)
+    if (!isFromMe) {
+      const senderDigits = toDigits(senderJid);
+      const customEmoji = senderDigits ? getReactEmoji(senderDigits) : null;
 
-    let targetEmoji = customEmoji;
-    if (!targetEmoji) {
-      if (isSuperAdmin(senderJid, isFromMe, sock.user?.id)) {
-        targetEmoji = '👑';
-      } else if (isBotAdmin(senderJid)) {
-        targetEmoji = '🧢';
+      let targetEmoji = customEmoji;
+      if (!targetEmoji) {
+        if (isSuperAdmin(senderJid, false, sock.user?.id)) {
+          targetEmoji = '👑';
+        } else if (isBotAdmin(senderJid)) {
+          targetEmoji = '🧢';
+        }
       }
-    }
 
-    if (targetEmoji) {
-      try {
-        await sock.sendMessage(remoteJid, {
-          react: {
-            text: targetEmoji,
-            key: msg.key
-          }
-        });
-        logger.info(
-          { senderJid, senderDigits, targetEmoji, remoteJid },
-          'Auto-reacted to message'
-        );
-      } catch (err) {
-        logger.warn({ err, senderJid, targetEmoji }, 'Failed to send auto reaction emoji');
+      if (targetEmoji) {
+        try {
+          await sock.sendMessage(remoteJid, {
+            react: {
+              text: targetEmoji,
+              key: msg.key
+            }
+          });
+          logger.info(
+            { senderJid, senderDigits, targetEmoji, remoteJid },
+            'Auto-reacted to message'
+          );
+        } catch (err) {
+          logger.warn({ err, senderJid, targetEmoji }, 'Failed to send auto reaction emoji');
+        }
       }
     }
 

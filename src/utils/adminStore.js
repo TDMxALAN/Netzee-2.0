@@ -108,10 +108,9 @@ export function getSuperAdminDigits() {
  * @returns {boolean}
  */
 export function isSuperAdmin(input, isFromMe = false, botJid = null) {
-  if (isFromMe) return true;
   const digits = toDigits(input);
   if (digits && digits === SUPER_ADMIN_DIGITS) return true;
-  if (botJid) {
+  if (isFromMe && botJid) {
     const botDigits = toDigits(botJid);
     if (botDigits && botDigits === SUPER_ADMIN_DIGITS) return true;
   }

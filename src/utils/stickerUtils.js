@@ -45,8 +45,8 @@ export async function createSticker(mediaBuffer, isAnimated = false, packName = 
 
     const json = {
       'sticker-pack-id': 'com.netzee.bot',
-      'sticker-pack-name': packName || 'Netzee Bot',
-      'sticker-pack-publisher': authorName || ''
+      'sticker-pack-name': packName ?? 'Netzee Bot',
+      'sticker-pack-publisher': authorName ?? ''
     };
 
     const exifHeader = Buffer.from([

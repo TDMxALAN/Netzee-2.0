@@ -166,3 +166,91 @@ export async function createSticker(mediaBuffer, isAnimated = false, packName = 
     throw err;
   }
 }
+
+/**
+ * Converts WebP / animated WebP (.awebp) / sticker media buffer into GIF and MP4 buffers.
+ * @param {Buffer} mediaBuffer - Input WebP, animated WebP, sticker, GIF, or video buffer
+ * @returns {Promise<{ gifBuffer: Buffer, mp4Buffer: Buffer | null }>}
+ */
+export async function convertWebpToGif(mediaBuffer) {
+  const tempId = crypto.randomBytes(8).toString('hex');
+  const tempDir = os.tmpdir();
+  let gifBuffer = null;
+
+  // 1. Convert input buffer to GIF using Sharp (or FFmpeg fallback)
+  try {
+    gifBuffer = await sharp(mediaBuffer, { animated: true, pages: -1 })
+      .gif({ loop: 0 })
+      .toBuffer();
+  } catch (sharpErr) {
+    logger.warn({ err: sharpErr.message }, 'Sharp GIF conversion failed, attempting FFmpeg fallback');
+
+    const inputPath = path.join(tempDir, `netzee_gif_in_${tempId}.bin`);
+    const gifOutputPath = path.join(tempDir, `netzee_gif_out_${tempId}.gif`);
+
+    try {
+      await fs.promises.writeFile(inputPath, mediaBuffer);
+      await new Promise((resolve, reject) => {
+        const args = [
+          '-y',
+          '-i', inputPath,
+          '-vf', 'fps=15,scale=512:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
+          gifOutputPath
+        ];
+        const proc = spawn(ffmpegPath, args);
+        let stderr = '';
+        proc.stderr.on('data', chunk => { stderr += chunk.toString(); });
+        proc.on('close', code => {
+          if (code === 0) resolve();
+          else reject(new Error(`FFmpeg GIF exit code ${code}: ${stderr.slice(-300)}`));
+        });
+        proc.on('error', reject);
+      });
+      gifBuffer = await fs.promises.readFile(gifOutputPath);
+    } finally {
+      try { if (fs.existsSync(inputPath)) await fs.promises.unlink(inputPath); } catch (_) {}
+      try { if (fs.existsSync(gifOutputPath)) await fs.promises.unlink(gifOutputPath); } catch (_) {}
+    }
+  }
+
+  if (!gifBuffer) {
+    throw new Error('Failed to convert WebP to GIF');
+  }
+
+  // 2. Convert GIF to MP4 video buffer for WhatsApp native gifPlayback
+  let mp4Buffer = null;
+  const tempGifFile = path.join(tempDir, `netzee_mp4_in_${tempId}.gif`);
+  const tempMp4File = path.join(tempDir, `netzee_mp4_out_${tempId}.mp4`);
+
+  try {
+    await fs.promises.writeFile(tempGifFile, gifBuffer);
+    await new Promise((resolve, reject) => {
+      const args = [
+        '-y',
+        '-i', tempGifFile,
+        '-movflags', 'faststart',
+        '-pix_fmt', 'yuv420p',
+        '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+        tempMp4File
+      ];
+      const proc = spawn(ffmpegPath, args);
+      let stderr = '';
+      proc.stderr.on('data', chunk => { stderr += chunk.toString(); });
+      proc.on('close', code => {
+        if (code === 0) resolve();
+        else reject(new Error(`FFmpeg MP4 exit code ${code}: ${stderr.slice(-300)}`));
+      });
+      proc.on('error', reject);
+    });
+
+    mp4Buffer = await fs.promises.readFile(tempMp4File);
+  } catch (mp4Err) {
+    logger.warn({ err: mp4Err.message }, 'Failed to generate MP4 for gifPlayback, falling back to GIF file only');
+  } finally {
+    try { if (fs.existsSync(tempGifFile)) await fs.promises.unlink(tempGifFile); } catch (_) {}
+    try { if (fs.existsSync(tempMp4File)) await fs.promises.unlink(tempMp4File); } catch (_) {}
+  }
+
+  return { gifBuffer, mp4Buffer };
+}
+

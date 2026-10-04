@@ -38,8 +38,10 @@ export default {
       const mediaMessage = targetMessage.message;
       const imageMsg = mediaMessage?.imageMessage;
       const videoMsg = mediaMessage?.videoMessage;
+      const docMsg = mediaMessage?.documentMessage;
+      const isDocMedia = docMsg && (docMsg.mimetype?.startsWith('image/') || docMsg.mimetype?.startsWith('video/'));
 
-      if (!imageMsg && !videoMsg) {
+      if (!imageMsg && !videoMsg && !isDocMedia) {
         return await reply(
           '⚠️ *Please reply to or attach a GIF/video with `as`!*\n\n' +
           '📌 *Examples:*\n' +
@@ -49,15 +51,10 @@ export default {
       }
 
       // Check if video message is animated or under duration limit
-      let isAnimated = false;
+      let isAnimated = Boolean(videoMsg || (docMsg && docMsg.mimetype?.startsWith('video/')) || imageMsg?.mimetype === 'image/gif');
       if (videoMsg) {
-        isAnimated = true;
         if (videoMsg.seconds && videoMsg.seconds > 10) {
           return await reply('❌ *Video/GIF is too long!* Please use a GIF or short video (under 10 seconds).');
-        }
-      } else if (imageMsg) {
-        if (imageMsg.mimetype === 'image/gif') {
-          isAnimated = true;
         }
       }
 

@@ -1,6 +1,88 @@
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import crypto from 'crypto';
+import { spawn } from 'child_process';
+import ffmpegStatic from 'ffmpeg-static';
 import sharp from 'sharp';
 import webp from 'node-webpmux';
 import logger from './logger.js';
+
+// Resolve ffmpeg binary path: system path or bundled ffmpeg-static
+const ffmpegPath = process.env.FFMPEG_PATH || ffmpegStatic || 'ffmpeg';
+
+/**
+ * Converts a video or GIF buffer into a 512x512 animated WebP sticker buffer using FFmpeg.
+ * @param {Buffer} mediaBuffer - Input video or gif buffer
+ * @param {number} [quality=50] - WebP quality (1-100)
+ * @param {number} [fps=15] - Target frames per second
+ * @returns {Promise<Buffer>} WebP buffer
+ */
+async function convertVideoToAnimatedWebp(mediaBuffer, quality = 50, fps = 15) {
+  const tempId = crypto.randomBytes(8).toString('hex');
+  const tempDir = os.tmpdir();
+  const inputPath = path.join(tempDir, `netzee_in_${tempId}.mp4`);
+  const outputPath = path.join(tempDir, `netzee_out_${tempId}.webp`);
+
+  try {
+    await fs.promises.writeFile(inputPath, mediaBuffer);
+
+    await new Promise((resolve, reject) => {
+      // Scale to 512x512 preserving aspect ratio, pad transparently, cap duration at 7s
+      const args = [
+        '-y',
+        '-i', inputPath,
+        '-t', '00:00:07',
+        '-vf', `scale=512:512:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000,fps=${fps}`,
+        '-vcodec', 'libwebp',
+        '-lossless', '0',
+        '-compression_level', '4',
+        '-q:v', `${quality}`,
+        '-loop', '0',
+        '-preset', 'default',
+        '-an',
+        outputPath
+      ];
+
+      const proc = spawn(ffmpegPath, args);
+      let stderr = '';
+
+      proc.stderr.on('data', (chunk) => {
+        stderr += chunk.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          logger.error({ stderr, code }, 'FFmpeg conversion failed');
+          reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-300)}`));
+        }
+      });
+
+      proc.on('error', (err) => {
+        reject(err);
+      });
+    });
+
+    let webpBuffer = await fs.promises.readFile(outputPath);
+
+    // WhatsApp animated stickers must be under 1MB (1,048,576 bytes)
+    if (webpBuffer.length > 1000000 && quality > 30) {
+      logger.info(`Animated sticker size ${webpBuffer.length} exceeds 1MB, compressing with lower quality...`);
+      return await convertVideoToAnimatedWebp(mediaBuffer, 30, 10);
+    }
+
+    return webpBuffer;
+  } finally {
+    try {
+      if (fs.existsSync(inputPath)) await fs.promises.unlink(inputPath);
+    } catch (_) {}
+    try {
+      if (fs.existsSync(outputPath)) await fs.promises.unlink(outputPath);
+    } catch (_) {}
+  }
+}
 
 /**
  * Converts image or video/gif buffer into a WhatsApp WebP sticker with metadata.
@@ -14,29 +96,46 @@ export async function createSticker(mediaBuffer, isAnimated = false, packName = 
   try {
     let webpBuffer;
 
-    if (!isAnimated) {
-      // Convert static image to 512x512 WebP using sharp
-      webpBuffer = await sharp(mediaBuffer)
-        .resize(512, 512, {
-          fit: 'contain',
-          background: { r: 0, g: 0, b: 0, alpha: 0 }
-        })
-        .webp({ quality: 80 })
-        .toBuffer();
+    // Check if buffer is an MP4 video (common for WhatsApp GIFs)
+    const isMp4 = mediaBuffer.length > 8 && mediaBuffer.slice(4, 8).toString() === 'ftyp';
+
+    if (isAnimated || isMp4) {
+      if (isMp4) {
+        // MP4 videos must be decoded and converted via FFmpeg
+        webpBuffer = await convertVideoToAnimatedWebp(mediaBuffer);
+      } else {
+        // Try Sharp first for native animated GIF/WebP
+        try {
+          webpBuffer = await sharp(mediaBuffer, { animated: true, pages: -1 })
+            .resize(512, 512, {
+              fit: 'contain',
+              background: { r: 0, g: 0, b: 0, alpha: 0 }
+            })
+            .webp({
+              quality: 60,
+              effort: 4,
+              loop: 0
+            })
+            .toBuffer();
+        } catch (sharpErr) {
+          logger.warn({ err: sharpErr.message }, 'Sharp failed for animated media, falling back to FFmpeg');
+          webpBuffer = await convertVideoToAnimatedWebp(mediaBuffer);
+        }
+      }
     } else {
-      // Convert animated GIF/video to animated 512x512 WebP using sharp
-      // sharp natively handles animated GIF/WebP with animated: true
-      webpBuffer = await sharp(mediaBuffer, { animated: true, pages: -1 })
-        .resize(512, 512, {
-          fit: 'contain',
-          background: { r: 0, g: 0, b: 0, alpha: 0 }
-        })
-        .webp({
-          quality: 60,
-          effort: 4,
-          loop: 0
-        })
-        .toBuffer();
+      // Convert static image to 512x512 WebP using sharp
+      try {
+        webpBuffer = await sharp(mediaBuffer)
+          .resize(512, 512, {
+            fit: 'contain',
+            background: { r: 0, g: 0, b: 0, alpha: 0 }
+          })
+          .webp({ quality: 80 })
+          .toBuffer();
+      } catch (sharpErr) {
+        logger.warn({ err: sharpErr.message }, 'Sharp failed for image media, falling back to FFmpeg');
+        webpBuffer = await convertVideoToAnimatedWebp(mediaBuffer);
+      }
     }
 
     // Add WhatsApp EXIF Sticker Metadata (sticker-pack-id, sticker-pack-name, sticker-pack-publisher)

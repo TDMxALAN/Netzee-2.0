@@ -1,4 +1,7 @@
 FROM node:20-alpine
+ 
+# Install ffmpeg and media build tools
+RUN apk add --no-cache ffmpeg vips-dev python3 make g++
 
 # Set working directory
 WORKDIR /app

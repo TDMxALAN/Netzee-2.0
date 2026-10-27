@@ -7,12 +7,21 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import fs from 'fs';
+import ffmpegStatic from 'ffmpeg-static';
 import path from 'path';
 import config from './config/config.js';
 import logger, { baileysLogger } from './utils/logger.js';
 import qrServer from './server/qrServer.js';
 import commandHandler from './handlers/commandHandler.js';
 import handleIncomingMessage from './handlers/messageHandler.js';
+
+// Prepend bundled ffmpeg-static path to system PATH so Baileys can extract video thumbnails
+if (ffmpegStatic) {
+  const ffmpegDir = path.dirname(ffmpegStatic);
+  if (!process.env.PATH.includes(ffmpegDir)) {
+    process.env.PATH = `${ffmpegDir}${path.delimiter}${process.env.PATH}`;
+  }
+}
 
 let globalSock = null;
 let isStarting = false;

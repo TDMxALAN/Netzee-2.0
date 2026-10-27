@@ -7,7 +7,13 @@ async function testFB() {
   try {
     console.log(`Input URL: ${testUrl}`);
     const res = await downloadFacebookVideo(testUrl);
-    console.log('Download Result:', res);
+    console.log('Download Result:', {
+      success: res.success,
+      quality: res.quality,
+      title: res.title,
+      downloadUrl: res.downloadUrl?.slice(0, 80) + '...',
+      bufferBytes: res.buffer?.length
+    });
   } catch (err) {
     console.log('Expected / Handled Error during offline test:', err.message);
   }

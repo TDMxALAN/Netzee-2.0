@@ -15,6 +15,30 @@ export function isTikTokUrl(url) {
 }
 
 /**
+ * Fetches the raw video buffer with browser headers and validation.
+ * @param {string} url - Direct video CDN URL
+ * @returns {Promise<Buffer>}
+ */
+async function fetchVideoBuffer(url) {
+  const response = await axios.get(url, {
+    responseType: 'arraybuffer',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Referer': 'https://www.tiktok.com/'
+    },
+    timeout: 45000,
+    maxContentLength: 100 * 1024 * 1024 // 100MB limit
+  });
+
+  const buffer = Buffer.from(response.data);
+  if (!buffer || buffer.length < 1000) {
+    throw new Error('Downloaded video buffer is empty or corrupted.');
+  }
+  return buffer;
+}
+
+/**
  * Method 1: TikWM API (HD / No-watermark primary)
  */
 async function downloadViaTikWM(url) {
@@ -28,19 +52,27 @@ async function downloadViaTikWM(url) {
 
   if (res.data && res.data.code === 0 && res.data.data) {
     const data = res.data.data;
-    const downloadUrl = data.hdplay || data.play || data.wmplay;
-    if (downloadUrl) {
-      const fullUrl = downloadUrl.startsWith('http') ? downloadUrl : `https://www.tikwm.com${downloadUrl}`;
-      return {
-        source: 'TikWM',
-        downloadUrl: fullUrl,
-        title: data.title || 'TikTok Video',
-        author: data.author?.nickname || data.author?.unique_id || 'Unknown',
-        quality: data.hdplay ? 'HD (No Watermark)' : 'Original (No Watermark)'
-      };
+    // Prefer data.play or data.hdplay
+    const candidateUrls = [data.play, data.hdplay, data.wmplay].filter(Boolean);
+
+    for (const dlUrl of candidateUrls) {
+      try {
+        const fullUrl = dlUrl.startsWith('http') ? dlUrl : `https://www.tikwm.com${dlUrl}`;
+        const buffer = await fetchVideoBuffer(fullUrl);
+        return {
+          source: 'TikWM',
+          downloadUrl: fullUrl,
+          buffer,
+          title: data.title || 'TikTok Video',
+          author: data.author?.nickname || data.author?.unique_id || 'Unknown',
+          quality: dlUrl === data.hdplay ? 'HD (No Watermark)' : 'Original (No Watermark)'
+        };
+      } catch (err) {
+        logger.warn({ err: err.message }, 'TikWM candidate stream failed, trying next candidate');
+      }
     }
   }
-  throw new Error('TikWM returned no valid video URL');
+  throw new Error('TikWM returned no valid video stream');
 }
 
 /**
@@ -79,9 +111,11 @@ async function downloadViaSSSTik(url) {
   const title = $res('p.maintext').text().trim() || 'TikTok Video';
 
   if (downloadUrl) {
+    const buffer = await fetchVideoBuffer(downloadUrl);
     return {
       source: 'SSSTik',
       downloadUrl,
+      buffer,
       title,
       author: 'TikTok User',
       quality: 'Original (No Watermark)'
@@ -113,9 +147,11 @@ async function downloadViaSaveTik(url) {
     const title = $('h3').text().trim() || 'TikTok Video';
 
     if (downloadUrl) {
+      const buffer = await fetchVideoBuffer(downloadUrl);
       return {
         source: 'SaveTik',
         downloadUrl,
+        buffer,
         title,
         author: 'TikTok User',
         quality: 'Maximum Available'
@@ -143,9 +179,11 @@ async function downloadViaTikMate(url) {
 
   if (res.data && res.data.token && res.data.id) {
     const downloadUrl = `https://tikmate.app/download/${res.data.token}/${res.data.id}.mp4`;
+    const buffer = await fetchVideoBuffer(downloadUrl);
     return {
       source: 'TikMate',
       downloadUrl,
+      buffer,
       title: res.data.author_name ? `TikTok by ${res.data.author_name}` : 'TikTok Video',
       author: res.data.author_name || 'TikTok User',
       quality: 'High Quality (No Watermark)'
@@ -171,9 +209,11 @@ async function downloadViaTikWMBackup(url) {
     const downloadUrl = data.play || data.wmplay;
     if (downloadUrl) {
       const fullUrl = downloadUrl.startsWith('http') ? downloadUrl : `https://tikwm.com${downloadUrl}`;
+      const buffer = await fetchVideoBuffer(fullUrl);
       return {
         source: 'TikWM Backup',
         downloadUrl: fullUrl,
+        buffer,
         title: data.title || 'TikTok Video',
         author: data.author?.nickname || data.author?.unique_id || 'Unknown',
         quality: 'Standard (No Watermark)'
@@ -186,9 +226,9 @@ async function downloadViaTikWMBackup(url) {
 
 /**
  * Master TikTok Downloader Function
- * Tries 5 different extraction methods sequentially to guarantee video delivery.
+ * Tries 5 different extraction methods sequentially and returns the downloaded video buffer.
  * @param {string} url - TikTok video URL
- * @returns {Promise<{downloadUrl: string, title: string, author: string, quality: string, source: string}>}
+ * @returns {Promise<{buffer: Buffer, downloadUrl: string, title: string, author: string, quality: string, source: string}>}
  */
 export async function downloadTikTokVideo(url) {
   if (!isTikTokUrl(url)) {
@@ -210,8 +250,8 @@ export async function downloadTikTokVideo(url) {
     try {
       logger.info({ url: cleanUrl, method: method.name }, `Attempting TikTok download via ${method.name}`);
       const result = await method.fn(cleanUrl);
-      if (result && result.downloadUrl) {
-        logger.info({ url: cleanUrl, source: result.source, quality: result.quality }, `TikTok download succeeded via ${result.source}`);
+      if (result && result.buffer && result.buffer.length > 0) {
+        logger.info({ url: cleanUrl, source: result.source, quality: result.quality, bytes: result.buffer.length }, `TikTok download succeeded via ${result.source}`);
         return result;
       }
     } catch (err) {

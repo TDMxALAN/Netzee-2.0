@@ -39,7 +39,7 @@ export default {
       // Extract video download URL using multi-backend fallback system
       const result = await downloadTikTokVideo(inputUrl);
 
-      if (!result || !result.downloadUrl) {
+      if (!result || !result.buffer || result.buffer.length === 0) {
         await sock.sendMessage(remoteJid, { react: { text: "❌", key: msg.key } });
         return await reply('❌ *Failed to fetch video. Please make sure the video link is public.*');
       }
@@ -52,18 +52,31 @@ export default {
       captionText += `⚡ *Source:* ${result.source}\n`;
       captionText += `🤖 *Downloaded via Netzee Bot*`;
 
-      // Send the downloaded video message with caption
-      await sock.sendMessage(
-        remoteJid,
-        {
-          video: { url: result.downloadUrl },
-          caption: captionText,
-          mimetype: 'video/mp4'
-        },
-        { quoted: msg }
-      );
+      // Send as document if > 60MB, otherwise native video message
+      if (result.buffer.length > 60 * 1024 * 1024) {
+        await sock.sendMessage(
+          remoteJid,
+          {
+            document: result.buffer,
+            mimetype: 'video/mp4',
+            fileName: `${result.title ? result.title.slice(0, 50).replace(/[^\w\s-]/g, '') : 'tiktok_video'}.mp4`,
+            caption: captionText
+          },
+          { quoted: msg }
+        );
+      } else {
+        await sock.sendMessage(
+          remoteJid,
+          {
+            video: result.buffer,
+            caption: captionText,
+            mimetype: 'video/mp4'
+          },
+          { quoted: msg }
+        );
+      }
 
-      // React with success icon
+      // React with success icon only after the video is confirmed sent
       await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
 
       logger.info({ url: inputUrl, source: result.source, quality: result.quality }, 'Successfully sent TikTok video');

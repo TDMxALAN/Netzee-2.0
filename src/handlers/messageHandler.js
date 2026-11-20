@@ -15,6 +15,7 @@ import { downloadMediaMessage } from '@whiskeysockets/baileys';
  * Additionally handles:
  * - Word filter: Deletes group messages containing banned words (when filter is ON).
  * - Banned-list reply sessions: Lets admins reply with a number to remove a word.
+ * - Anti-View Once: Intercepts replies to view-once messages and forwards media to self chat.
  */
 export async function handleIncomingMessage(sock, messageInfo) {
   try {
@@ -41,12 +42,11 @@ export async function handleIncomingMessage(sock, messageInfo) {
     const isGroup = remoteJid.endsWith('@g.us');
 
     // ════════════════════════════════════════════════════════════════
-    // ANTI-VIEW ONCE — intercept replies to view-once messages
+    // ANTI-VIEW ONCE — intercept replies to view-once messages.
     // Triggered by any reply (with or without prefix) to a view-once.
     // The original media is forwarded silently to the bot's self chat.
     // ════════════════════════════════════════════════════════════════
     await handleAntiViewOnce(sock, msg);
-
 
     // Extract text content from various message types (text, extended text, image/video captions)
     const body = (
@@ -284,112 +284,157 @@ export default handleIncomingMessage;
 
 // ════════════════════════════════════════════════════════════════════════════
 // ANTI-VIEW ONCE HANDLER
-// Detects when any message is a reply to a view-once message.
-// Downloads the view-once media and forwards it to the bot's own JID (self chat).
-// Works with or without a command prefix — any reply triggers it.
+// Mirrors the exact logic from angiegangsta-x/lib/utils.js:
+//   unwrapMessage() + extractMediaType() + downloadMessageMedia()
+// adapted for this ESM project.
+//
+// Trigger : ANY reply to a view-once message (no prefix needed, any text).
+// Action  : Download the media and forward it silently to the bot's self chat.
 // ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Unwrap view-once / ephemeral / documentWithCaption wrappers and return
+ * the inner message object, or the original if no wrapper is found.
+ * Mirrors angiegangsta-x utils.js → unwrapMessage()
+ */
+function unwrapMessage(message) {
+  if (!message) return null;
+  const inner =
+    message.viewOnceMessage?.message ||
+    message.viewOnceMessageV2?.message ||
+    message.viewOnceMessageV2Extension?.message ||
+    message.ephemeralMessage?.message ||
+    message.documentWithCaptionMessage?.message ||
+    message.editedMessage?.message ||
+    null;
+  return inner || message;
+}
+
+/**
+ * Find the media type node inside a (possibly wrapped) message.
+ * Returns { type, node, holder } or null.
+ * Mirrors angiegangsta-x utils.js → extractMediaType()
+ */
+function extractMediaType(message) {
+  const m = unwrapMessage(message);
+  if (!m) return null;
+  if (m.imageMessage)    return { type: 'image',    node: m.imageMessage,    holder: m };
+  if (m.videoMessage)    return { type: 'video',    node: m.videoMessage,    holder: m };
+  if (m.audioMessage)    return { type: 'audio',    node: m.audioMessage,    holder: m };
+  if (m.stickerMessage)  return { type: 'sticker',  node: m.stickerMessage,  holder: m };
+  if (m.documentMessage) return { type: 'document', node: m.documentMessage, holder: m };
+  if (m.documentWithCaptionMessage?.message?.documentMessage) {
+    return { type: 'document', node: m.documentWithCaptionMessage.message.documentMessage, holder: m };
+  }
+  return null;
+}
+
 async function handleAntiViewOnce(sock, msg) {
   try {
-    const contextInfo = msg.message?.extendedTextMessage?.contextInfo
-      || msg.message?.imageMessage?.contextInfo
-      || msg.message?.videoMessage?.contextInfo
-      || msg.message?.audioMessage?.contextInfo
-      || msg.message?.stickerMessage?.contextInfo
-      || msg.message?.documentMessage?.contextInfo
-      || null;
+    const rawMsg = msg.message || {};
+
+    // Pull contextInfo from whichever message type carries a quoted reply
+    const contextInfo =
+      rawMsg.extendedTextMessage?.contextInfo ||
+      rawMsg.imageMessage?.contextInfo       ||
+      rawMsg.videoMessage?.contextInfo       ||
+      rawMsg.audioMessage?.contextInfo       ||
+      rawMsg.stickerMessage?.contextInfo     ||
+      rawMsg.documentMessage?.contextInfo    ||
+      null;
 
     // Must be a reply message
-    if (!contextInfo || !contextInfo.quotedMessage) return;
+    if (!contextInfo?.quotedMessage) return;
 
     const quotedMsg = contextInfo.quotedMessage;
 
-    // Determine if the quoted message is a view-once message
-    // WhatsApp encodes view-once as viewOnceMessage or viewOnceMessageV2
-    const viewOnceKey = Object.keys(quotedMsg).find(
-      k => k === 'viewOnceMessage' || k === 'viewOnceMessageV2' || k === 'viewOnceMessageV2Extension'
+    // Check if the quoted message is any view-once variant
+    const isViewOnce = !!(
+      quotedMsg.viewOnceMessage           ||
+      quotedMsg.viewOnceMessageV2         ||
+      quotedMsg.viewOnceMessageV2Extension
     );
+    if (!isViewOnce) return;
 
-    if (!viewOnceKey) return; // Not a view-once reply — skip
+    // Unwrap the view-once wrapper to reach the inner media message
+    const innerMessage = unwrapMessage(quotedMsg);
+    if (!innerMessage) return;
 
-    const viewOnceContent = quotedMsg[viewOnceKey]?.message;
-    if (!viewOnceContent) return;
-
-    // Identify inner media type (imageMessage, videoMessage, audioMessage)
-    const mediaType = Object.keys(viewOnceContent).find(
-      k => k === 'imageMessage' || k === 'videoMessage' || k === 'audioMessage'
-    );
-
-    if (!mediaType) return;
+    // Find the media type inside the unwrapped inner message
+    const info = extractMediaType(innerMessage);
+    if (!info) return;
 
     logger.info(
-      { from: msg.key.remoteJid, mediaType },
+      { from: msg.key.remoteJid, type: info.type },
       '[Anti-ViewOnce] View-once reply detected — forwarding to self chat'
     );
 
-    // Reconstruct a fake message object that downloadMediaMessage can work with
-    const fakeMsg = {
+    // Build the target object exactly as angiegangsta-x does in downloadMessageMedia():
+    // key points to the original view-once message, message is the unwrapped holder.
+    const target = {
       key: {
         remoteJid: msg.key.remoteJid,
-        id: contextInfo.stanzaId,
-        participant: contextInfo.participant
+        id:        contextInfo.stanzaId,
+        participant: contextInfo.participant,
+        fromMe: false,
       },
-      message: viewOnceContent
+      message: info.holder,
     };
 
-    // Download the view-once media as a buffer
+    // Download the media buffer
     const buffer = await downloadMediaMessage(
-      fakeMsg,
+      target,
       'buffer',
       {},
       { logger, reuploadRequest: sock.updateMediaMessage }
     );
 
     if (!buffer || buffer.length === 0) {
-      logger.warn('[Anti-ViewOnce] Downloaded buffer is empty — media may have expired');
+      logger.warn('[Anti-ViewOnce] Buffer empty — media may have expired');
       return;
     }
 
-    // Build the self-chat JID from the bot's own number
+    // Resolve bot's self-chat JID (strip device suffix e.g. :12)
     const selfJid = sock.user?.id;
     if (!selfJid) {
-      logger.warn('[Anti-ViewOnce] sock.user.id not available yet');
+      logger.warn('[Anti-ViewOnce] sock.user.id not ready');
       return;
     }
-
-    // Normalize JID: strip device suffix (e.g. :12) to get bare JID
     const selfBareJid = selfJid.includes(':')
       ? selfJid.split(':')[0] + '@s.whatsapp.net'
       : selfJid;
 
-    // Determine the sender display name
-    const senderJid = msg.key.participant || msg.key.remoteJid;
+    // Build caption with sender + chat info
+    const senderJid  = msg.key.participant || msg.key.remoteJid;
     const senderName = msg.pushName || senderJid.split('@')[0];
-    const chatType = msg.key.remoteJid.endsWith('@g.us') ? 'group' : 'DM';
-
-    // Build caption
+    const chatLabel  = msg.key.remoteJid.endsWith('@g.us') ? msg.key.remoteJid : 'DM';
     const caption =
       `🔓 *Anti-View Once*\n` +
       `👤 *From:* ${senderName}\n` +
-      `💬 *Chat:* ${chatType === 'group' ? msg.key.remoteJid : 'DM'}\n` +
-      `📁 *Type:* ${mediaType.replace('Message', '')}`;
+      `💬 *Chat:* ${chatLabel}\n` +
+      `📁 *Type:* ${info.type}`;
 
     // Build send payload based on media type
     let sendPayload;
-    if (mediaType === 'imageMessage') {
-      sendPayload = { image: buffer, caption };
-    } else if (mediaType === 'videoMessage') {
-      sendPayload = { video: buffer, caption };
-    } else if (mediaType === 'audioMessage') {
-      const isVoice = viewOnceContent.audioMessage?.ptt === true;
-      sendPayload = { audio: buffer, ptt: isVoice, mimetype: 'audio/ogg; codecs=opus' };
+    if (info.type === 'image') {
+      sendPayload = { image: Buffer.from(buffer), caption };
+    } else if (info.type === 'video') {
+      sendPayload = { video: Buffer.from(buffer), caption };
+    } else if (info.type === 'audio') {
+      const isPtt = info.node?.ptt === true;
+      sendPayload = {
+        audio: Buffer.from(buffer),
+        ptt: isPtt,
+        mimetype: info.node?.mimetype || 'audio/ogg; codecs=opus',
+      };
     }
 
     if (sendPayload) {
       await sock.sendMessage(selfBareJid, sendPayload);
-      logger.info('[Anti-ViewOnce] Media successfully forwarded to self chat');
+      logger.info('[Anti-ViewOnce] Media forwarded to self chat ✓');
     }
 
   } catch (err) {
-    logger.error({ err }, '[Anti-ViewOnce] Error while processing view-once reply');
+    logger.error({ err }, '[Anti-ViewOnce] Failed to process view-once reply');
   }
 }

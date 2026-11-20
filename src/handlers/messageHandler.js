@@ -15,7 +15,7 @@ import { downloadMediaMessage } from '@whiskeysockets/baileys';
  * Additionally handles:
  * - Word filter: Deletes group messages containing banned words (when filter is ON).
  * - Banned-list reply sessions: Lets admins reply with a number to remove a word.
- * - Anti-View Once: Intercepts replies to view-once messages and forwards media to self chat.
+ * - Anti-View Once: Any reply to a view-once → auto-forward media to self chat.
  */
 export async function handleIncomingMessage(sock, messageInfo) {
   try {
@@ -42,13 +42,15 @@ export async function handleIncomingMessage(sock, messageInfo) {
     const isGroup = remoteJid.endsWith('@g.us');
 
     // ════════════════════════════════════════════════════════════════
-    // ANTI-VIEW ONCE — intercept replies to view-once messages.
-    // Triggered by any reply (with or without prefix) to a view-once.
-    // The original media is forwarded silently to the bot's self chat.
+    // ANTI-VIEW ONCE
+    // Any reply to a view-once message (with or without prefix)
+    // → download media → forward silently to bot's self chat.
+    // Ported from angiegangsta-x/plugins/media.js → vvHandler()
+    //            and angiegangsta-x/lib/utils.js → downloadMessageMedia()
     // ════════════════════════════════════════════════════════════════
-    await handleAntiViewOnce(sock, msg);
+    await antiViewOnce(sock, msg);
 
-    // Extract text content from various message types (text, extended text, image/video captions)
+    // Extract text content from various message types
     const body = (
       msg.message.conversation ||
       msg.message.extendedTextMessage?.text ||
@@ -68,19 +70,15 @@ export async function handleIncomingMessage(sock, messageInfo) {
       const senderJid = msg.key.participant || msg.participant || remoteJid;
 
       // ── Step 1: Check banned-list reply session ──────────────────
-      // If a !banned numbered list is active for this group, check if
-      // this message is a reply to that specific bot message.
       const session = getBannedListSession(remoteJid);
       if (session) {
         const quotedId = msg.message?.extendedTextMessage?.contextInfo?.stanzaId;
         const isReplyToBannedList = quotedId === session.bannedListMsgId;
 
         if (isReplyToBannedList) {
-          // Only admins can unban via reply
           const { isAdmin, metadata } = await getBotAdminStatus(sock, remoteJid);
 
           if (isAdmin && isSenderAdmin(metadata, senderJid)) {
-            // Parse the reply body: could be "1", "2 3", "1,2,3" etc.
             const indices = body
               .split(/[\s,]+/)
               .map(s => parseInt(s.trim(), 10))
@@ -88,8 +86,6 @@ export async function handleIncomingMessage(sock, messageInfo) {
 
             if (indices.length > 0) {
               const { words } = getFilterConfig(remoteJid);
-
-              // Validate indices are in range
               const validIndices = indices.filter(i => i <= words.length);
               const invalidIndices = indices.filter(i => i > words.length);
 
@@ -108,16 +104,13 @@ export async function handleIncomingMessage(sock, messageInfo) {
                   responseText += `\n\n⚠️ Ignored out-of-range number(s): ${invalidIndices.join(', ')}`;
                 }
 
-                // Send updated list so the session stays active
                 const { words: updatedWords, enabled } = getFilterConfig(remoteJid);
 
                 if (updatedWords.length === 0) {
                   responseText += '\n\n📋 The banned word list is now *empty*.';
-                  // Send response, then clear session (list is empty)
                   await sock.sendMessage(remoteJid, { text: responseText }, { quoted: msg });
                   clearBannedListSession(remoteJid);
                 } else {
-                  // Append fresh numbered list and re-register session
                   const numberedList = updatedWords
                     .map((w, i) => `  ${i + 1}. \`${w}\``)
                     .join('\n');
@@ -134,7 +127,6 @@ export async function handleIncomingMessage(sock, messageInfo) {
                     { quoted: msg }
                   );
 
-                  // Update session to the new list message
                   const newMsgId = sentMsg?.key?.id;
                   if (newMsgId) {
                     setBannedListSession(remoteJid, newMsgId);
@@ -142,19 +134,13 @@ export async function handleIncomingMessage(sock, messageInfo) {
                 }
               }
 
-              // Message handled as a session reply — stop further processing
               return;
             }
           }
-
-          // Reply was to the banned list but wasn't a valid number —
-          // fall through to normal command/filter processing below.
         }
       }
 
       // ── Step 2: Word filter check ────────────────────────────────
-      // Skip command messages from admins so they don't get blocked by
-      // the filter when typing e.g. !ban badword (the word appears in command)
       const groupPrefixesLocal = config.groupPrefixes;
       const isCommand = groupPrefixesLocal.some(p => body.startsWith(p));
 
@@ -170,14 +156,13 @@ export async function handleIncomingMessage(sock, messageInfo) {
           } catch (err) {
             logger.warn({ err }, 'Failed to delete message with banned word (bot may not be admin)');
           }
-          // Stop processing — message is deleted
           return;
         }
       }
     }
 
     // ════════════════════════════════════════════════════════════════
-    // COMMAND ROUTING — same logic as before
+    // COMMAND ROUTING
     // ════════════════════════════════════════════════════════════════
 
     let commandName = '';
@@ -185,14 +170,11 @@ export async function handleIncomingMessage(sock, messageInfo) {
     let usedPrefix = '';
     let isCommandMatched = false;
 
-    // Allowed group prefixes from config (['!', '.'])
     const groupPrefixes = config.groupPrefixes;
 
     if (isGroup) {
-      // GROUP CHAT RULE: Must start strictly with '!' or '.'
       const matchingPrefix = groupPrefixes.find(p => body.startsWith(p));
       if (!matchingPrefix) {
-        // Ignore messages in groups that don't start with ! or .
         return;
       }
 
@@ -203,8 +185,6 @@ export async function handleIncomingMessage(sock, messageInfo) {
       args = parts.slice(1);
       isCommandMatched = true;
     } else {
-      // DM CHAT RULE: Works with any prefix or prefix-less
-      // 1. Check if it starts with standard group prefixes (! or .)
       const matchingPrefix = groupPrefixes.find(p => body.startsWith(p));
 
       if (matchingPrefix) {
@@ -215,7 +195,6 @@ export async function handleIncomingMessage(sock, messageInfo) {
         args = parts.slice(1);
         isCommandMatched = true;
       } else {
-        // 2. Check for other single-character prefixes (e.g. /, #, $)
         const symbolPrefixMatch = body.match(/^^[^\w\s]/);
         if (symbolPrefixMatch) {
           usedPrefix = symbolPrefixMatch[0];
@@ -225,11 +204,8 @@ export async function handleIncomingMessage(sock, messageInfo) {
           args = parts.slice(1);
           isCommandMatched = true;
         } else {
-          // 3. Prefix-less handling in DM: evaluate first word as potential command
           const parts = body.split(/\s+/);
           const potentialCmd = parts[0];
-
-          // Verify if potentialCmd matches a registered command or alias
           const targetCommand = commandHandler.getCommand(potentialCmd);
           if (targetCommand) {
             usedPrefix = '';
@@ -245,7 +221,6 @@ export async function handleIncomingMessage(sock, messageInfo) {
       return;
     }
 
-    // Find registered command
     const command = commandHandler.getCommand(commandName);
     if (!command) {
       return;
@@ -258,7 +233,6 @@ export async function handleIncomingMessage(sock, messageInfo) {
       usedPrefix
     }, `Executing command [${command.name}]`);
 
-    // Helper context passed to command execution
     const context = {
       sock,
       msg,
@@ -272,7 +246,6 @@ export async function handleIncomingMessage(sock, messageInfo) {
       }
     };
 
-    // Execute the command function
     await command.execute(context);
 
   } catch (err) {
@@ -283,20 +256,18 @@ export async function handleIncomingMessage(sock, messageInfo) {
 export default handleIncomingMessage;
 
 // ════════════════════════════════════════════════════════════════════════════
-// ANTI-VIEW ONCE HANDLER
-// Mirrors the exact logic from angiegangsta-x/lib/utils.js:
-//   unwrapMessage() + extractMediaType() + downloadMessageMedia()
-// adapted for this ESM project.
+// ANTI-VIEW ONCE — ported from angiegangsta-x
 //
-// Trigger : ANY reply to a view-once message (no prefix needed, any text).
-// Action  : Download the media and forward it silently to the bot's self chat.
+// Reference files:
+//   lib/utils.js  → unwrapMessage(), extractMediaType(), downloadMessageMedia()
+//   plugins/media.js → vvHandler()
+//
+// When the bot sees ANY reply to a view-once message it downloads the media
+// and silently forwards it to the bot's own self-chat JID.
+// No command prefix required — any reply text triggers it.
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * Unwrap view-once / ephemeral / documentWithCaption wrappers and return
- * the inner message object, or the original if no wrapper is found.
- * Mirrors angiegangsta-x utils.js → unwrapMessage()
- */
+/** angiegangsta-x utils.js → unwrapMessage() — exact port */
 function unwrapMessage(message) {
   if (!message) return null;
   const inner =
@@ -310,11 +281,7 @@ function unwrapMessage(message) {
   return inner || message;
 }
 
-/**
- * Find the media type node inside a (possibly wrapped) message.
- * Returns { type, node, holder } or null.
- * Mirrors angiegangsta-x utils.js → extractMediaType()
- */
+/** angiegangsta-x utils.js → extractMediaType() — exact port */
 function extractMediaType(message) {
   const m = unwrapMessage(message);
   if (!m) return null;
@@ -329,12 +296,70 @@ function extractMediaType(message) {
   return null;
 }
 
-async function handleAntiViewOnce(sock, msg) {
+/**
+ * angiegangsta-x utils.js → downloadMessageMedia() — exact port (ESM, preferQuoted=true)
+ * Downloads the quoted message's media. Returns { buffer, type, caption, isViewOnce, mimetype }
+ */
+async function downloadMessageMediaFromQuoted(sock, m) {
+  const { createRequire } = await import('module');
+  const require = createRequire(import.meta.url);
+  const P = require('pino');
+  const silent = P({ level: 'silent' });
+
+  const msg = m.message || {};
+  const ctx = msg.extendedTextMessage?.contextInfo
+    || msg.imageMessage?.contextInfo
+    || msg.videoMessage?.contextInfo
+    || msg.audioMessage?.contextInfo
+    || msg.stickerMessage?.contextInfo
+    || msg.documentMessage?.contextInfo
+    || null;
+
+  if (!ctx?.quotedMessage) return null;
+
+  const info = extractMediaType(ctx.quotedMessage);
+  if (!info) return null;
+
+  const isViewOnce = !!(
+    ctx.quotedMessage.viewOnceMessage ||
+    ctx.quotedMessage.viewOnceMessageV2 ||
+    ctx.quotedMessage.viewOnceMessageV2Extension
+  );
+
+  // Build target object — key points to quoted msg, message is the unwrapped holder
+  const target = {
+    key: {
+      remoteJid: m.key.remoteJid,
+      id: ctx.stanzaId,
+      participant: ctx.participant,
+      fromMe: false,
+    },
+    message: info.holder,
+  };
+
+  const buffer = await downloadMediaMessage(
+    target,
+    'buffer',
+    {},
+    { logger: silent, reuploadRequest: sock.updateMediaMessage }
+  );
+
+  return {
+    buffer: Buffer.from(buffer),
+    type: info.type,
+    caption: info.node?.caption || '',
+    isViewOnce,
+    mimetype: info.node?.mimetype || '',
+  };
+}
+
+/** Exact port of angiegangsta-x plugins/media.js → vvHandler() logic, auto-triggered on reply */
+async function antiViewOnce(sock, msg) {
   try {
     const rawMsg = msg.message || {};
 
-    // Pull contextInfo from whichever message type carries a quoted reply
-    const contextInfo =
+    // Check if this message is a reply at all
+    const ctx =
       rawMsg.extendedTextMessage?.contextInfo ||
       rawMsg.imageMessage?.contextInfo       ||
       rawMsg.videoMessage?.contextInfo       ||
@@ -343,98 +368,61 @@ async function handleAntiViewOnce(sock, msg) {
       rawMsg.documentMessage?.contextInfo    ||
       null;
 
-    // Must be a reply message
-    if (!contextInfo?.quotedMessage) return;
+    if (!ctx?.quotedMessage) return; // not a reply
 
-    const quotedMsg = contextInfo.quotedMessage;
-
-    // Check if the quoted message is any view-once variant
+    // Check if the quoted (replied-to) message is a view-once
+    const quotedMsg = ctx.quotedMessage;
     const isViewOnce = !!(
       quotedMsg.viewOnceMessage           ||
       quotedMsg.viewOnceMessageV2         ||
       quotedMsg.viewOnceMessageV2Extension
     );
-    if (!isViewOnce) return;
-
-    // Unwrap the view-once wrapper to reach the inner media message
-    const innerMessage = unwrapMessage(quotedMsg);
-    if (!innerMessage) return;
-
-    // Find the media type inside the unwrapped inner message
-    const info = extractMediaType(innerMessage);
-    if (!info) return;
+    if (!isViewOnce) return; // quoted msg is not a view-once
 
     logger.info(
-      { from: msg.key.remoteJid, type: info.type },
-      '[Anti-ViewOnce] View-once reply detected — forwarding to self chat'
+      { from: msg.key.remoteJid },
+      '[AntiViewOnce] view-once reply detected — downloading and forwarding to self'
     );
 
-    // Build the target object exactly as angiegangsta-x does in downloadMessageMedia():
-    // key points to the original view-once message, message is the unwrapped holder.
-    const target = {
-      key: {
-        remoteJid: msg.key.remoteJid,
-        id:        contextInfo.stanzaId,
-        participant: contextInfo.participant,
-        fromMe: false,
-      },
-      message: info.holder,
-    };
-
-    // Download the media buffer
-    const buffer = await downloadMediaMessage(
-      target,
-      'buffer',
-      {},
-      { logger, reuploadRequest: sock.updateMediaMessage }
-    );
-
-    if (!buffer || buffer.length === 0) {
-      logger.warn('[Anti-ViewOnce] Buffer empty — media may have expired');
+    // Download exactly as vvHandler does via downloadMessageMedia(ctx.sock, ctx.m, { preferQuoted: true })
+    const media = await downloadMessageMediaFromQuoted(sock, msg);
+    if (!media) {
+      logger.warn('[AntiViewOnce] could not download media — may have expired');
       return;
     }
 
-    // Resolve bot's self-chat JID (strip device suffix e.g. :12)
+    // Resolve self-chat JID (strip :device suffix e.g. 628xxx:12@s.whatsapp.net → 628xxx@s.whatsapp.net)
     const selfJid = sock.user?.id;
-    if (!selfJid) {
-      logger.warn('[Anti-ViewOnce] sock.user.id not ready');
-      return;
-    }
+    if (!selfJid) return;
     const selfBareJid = selfJid.includes(':')
       ? selfJid.split(':')[0] + '@s.whatsapp.net'
       : selfJid;
 
-    // Build caption with sender + chat info
-    const senderJid  = msg.key.participant || msg.key.remoteJid;
-    const senderName = msg.pushName || senderJid.split('@')[0];
+    // Build caption (same info reference repo shows)
+    const senderName = msg.pushName || (msg.key.participant || msg.key.remoteJid).split('@')[0];
     const chatLabel  = msg.key.remoteJid.endsWith('@g.us') ? msg.key.remoteJid : 'DM';
-    const caption =
-      `🔓 *Anti-View Once*\n` +
-      `👤 *From:* ${senderName}\n` +
-      `💬 *Chat:* ${chatLabel}\n` +
-      `📁 *Type:* ${info.type}`;
+    const caption    = `🔓 *view once unlocked*\n👤 from: ${senderName}\n💬 chat: ${chatLabel}`;
 
-    // Build send payload based on media type
-    let sendPayload;
-    if (info.type === 'image') {
-      sendPayload = { image: Buffer.from(buffer), caption };
-    } else if (info.type === 'video') {
-      sendPayload = { video: Buffer.from(buffer), caption };
-    } else if (info.type === 'audio') {
-      const isPtt = info.node?.ptt === true;
-      sendPayload = {
-        audio: Buffer.from(buffer),
-        ptt: isPtt,
-        mimetype: info.node?.mimetype || 'audio/ogg; codecs=opus',
-      };
+    // Send to self — mirrors exact payload from vvHandler in angiegangsta-x
+    if (media.type === 'video') {
+      await sock.sendMessage(selfBareJid, { video: media.buffer, caption });
+    } else if (media.type === 'audio') {
+      await sock.sendMessage(selfBareJid, {
+        audio: media.buffer,
+        mimetype: 'audio/mpeg',
+        ptt: true,
+      });
+    } else {
+      // image (default)
+      await sock.sendMessage(selfBareJid, {
+        image: media.buffer,
+        caption: `🔓 *view once unlocked*\n> ${senderName}`,
+      });
     }
 
-    if (sendPayload) {
-      await sock.sendMessage(selfBareJid, sendPayload);
-      logger.info('[Anti-ViewOnce] Media forwarded to self chat ✓');
-    }
+    logger.info('[AntiViewOnce] forwarded to self chat ✓');
 
   } catch (err) {
-    logger.error({ err }, '[Anti-ViewOnce] Failed to process view-once reply');
+    logger.error({ err }, '[AntiViewOnce] error');
   }
 }

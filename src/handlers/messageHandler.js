@@ -5,6 +5,7 @@ import { findBannedWord, getFilterConfig, removeWordsByIndex } from '../utils/fi
 import { getBotAdminStatus, isSenderAdmin } from '../utils/groupUtils.js';
 import { getBannedListSession, setBannedListSession, clearBannedListSession } from '../utils/sessionStore.js';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
+import { isBotSentMessage } from '../utils/messageTracker.js';
 
 /**
  * Message Handler Module
@@ -33,24 +34,15 @@ export async function handleIncomingMessage(sock, messageInfo) {
       return;
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // ANTI-VIEW ONCE — must run BEFORE the fromMe guard.
-    //
-    // BUG that was killing it before: antiViewOnce was placed AFTER
-    // `if (msg.key.fromMe) return` — so when the bot owner replied
-    // from their own phone, fromMe=true caused an early return and
-    // antiViewOnce never executed.
-    //
-    // We also handle TWO triggers here (matching angiegangsta-x logic):
-    //   1. The incoming message ITSELF is a view-once (auto-capture on receive)
-    //   2. The message is a REPLY to a view-once (owner triggered)
-    // ════════════════════════════════════════════════════════════════
-    await antiViewOnce(sock, msg);
-
-    // Ignore messages sent by the bot itself (after antiViewOnce check)
-    if (msg.key.fromMe) {
+    // Ignore automated messages generated and sent programmatically by the bot itself
+    if (msg.key?.id && isBotSentMessage(msg.key.id)) {
       return;
     }
+
+    // ════════════════════════════════════════════════════════════════
+    // ANTI-VIEW ONCE
+    // ════════════════════════════════════════════════════════════════
+    await antiViewOnce(sock, msg);
 
     const remoteJid = msg.key.remoteJid;
     const isGroup = remoteJid.endsWith('@g.us');
@@ -72,7 +64,9 @@ export async function handleIncomingMessage(sock, messageInfo) {
     // WORD FILTER — runs for every group message before command logic
     // ════════════════════════════════════════════════════════════════
     if (isGroup) {
-      const senderJid = msg.key.participant || msg.participant || remoteJid;
+      const senderJid = msg.key.fromMe
+        ? (sock.user?.id || msg.key.participant || msg.participant || remoteJid)
+        : (msg.key.participant || msg.participant || remoteJid);
 
       // ── Step 1: Check banned-list reply session ──────────────────
       const session = getBannedListSession(remoteJid);
@@ -83,7 +77,7 @@ export async function handleIncomingMessage(sock, messageInfo) {
         if (isReplyToBannedList) {
           const { isAdmin, metadata } = await getBotAdminStatus(sock, remoteJid);
 
-          if (isAdmin && isSenderAdmin(metadata, senderJid)) {
+          if (isAdmin && (msg.key.fromMe || isSenderAdmin(metadata, senderJid))) {
             const indices = body
               .split(/[\s,]+/)
               .map(s => parseInt(s.trim(), 10))
@@ -149,7 +143,7 @@ export async function handleIncomingMessage(sock, messageInfo) {
       const groupPrefixesLocal = config.groupPrefixes;
       const isCommand = groupPrefixesLocal.some(p => body.startsWith(p));
 
-      if (!isCommand) {
+      if (!isCommand && !msg.key.fromMe) {
         const matchedWord = findBannedWord(remoteJid, body);
         if (matchedWord) {
           try {
@@ -238,6 +232,10 @@ export async function handleIncomingMessage(sock, messageInfo) {
       usedPrefix
     }, `Executing command [${command.name}]`);
 
+    const senderJid = msg.key.fromMe
+      ? (sock.user?.id || msg.key.participant || msg.participant || remoteJid)
+      : (msg.key.participant || msg.participant || remoteJid);
+
     const context = {
       sock,
       msg,
@@ -246,6 +244,7 @@ export async function handleIncomingMessage(sock, messageInfo) {
       body,
       args,
       usedPrefix,
+      senderJid,
       reply: async (text) => {
         return await sock.sendMessage(remoteJid, { text }, { quoted: msg });
       }

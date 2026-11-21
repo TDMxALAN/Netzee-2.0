@@ -14,6 +14,7 @@ import logger, { baileysLogger } from './utils/logger.js';
 import qrServer from './server/qrServer.js';
 import commandHandler from './handlers/commandHandler.js';
 import handleIncomingMessage from './handlers/messageHandler.js';
+import { registerBotMessage } from './utils/messageTracker.js';
 
 // Prepend bundled ffmpeg-static path to system PATH so Baileys can extract video thumbnails
 if (ffmpegStatic) {
@@ -115,6 +116,16 @@ async function startBot() {
       keepAliveIntervalMs: 25000,
       generateHighQualityLinkPreview: true
     });
+
+    // Intercept sendMessage to register messages sent programmatically by the bot
+    const rawSendMessage = sock.sendMessage.bind(sock);
+    sock.sendMessage = async (...args) => {
+      const result = await rawSendMessage(...args);
+      if (result?.key?.id) {
+        registerBotMessage(result.key.id);
+      }
+      return result;
+    };
 
     globalSock = sock;
 

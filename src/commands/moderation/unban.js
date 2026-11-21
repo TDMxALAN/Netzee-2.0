@@ -35,8 +35,8 @@ export default {
     }
 
     // ── Sender must be admin ──
-    const senderJid = msg.key.participant || msg.participant || remoteJid;
-    if (!isSenderAdmin(metadata, senderJid)) {
+    const senderJid = ctx.senderJid || msg.key.participant || msg.participant || (msg.key.fromMe ? sock.user?.id : remoteJid);
+    if (!msg.key.fromMe && !isSenderAdmin(metadata, senderJid)) {
       return await reply('🚫 Only *group admins* can modify the banned word list.');
     }
 

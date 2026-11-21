@@ -6,6 +6,12 @@ import { getBotAdminStatus, isSenderAdmin } from '../utils/groupUtils.js';
 import { getBannedListSession, setBannedListSession, clearBannedListSession } from '../utils/sessionStore.js';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { isBotSentMessage } from '../utils/messageTracker.js';
+import {
+  isViewOnceMessage,
+  extractMediaType,
+  downloadMediaBuffer,
+  resolveSelfBareJid
+} from '../utils/viewOnceUtils.js';
 
 /**
  * Message Handler Module
@@ -260,204 +266,108 @@ export async function handleIncomingMessage(sock, messageInfo) {
 export default handleIncomingMessage;
 
 // ════════════════════════════════════════════════════════════════════════════
-// ANTI-VIEW ONCE — full port from angiegangsta-x
-//
-// Sources:
-//   lib/utils.js      → unwrapMessage(), extractMediaType(), downloadMessageMedia()
-//   plugins/media.js  → vvHandler()
-//   lib/handler.js    → handleMessage() fromMe logic (reference for placement)
-//
-// BUGS FIXED vs previous attempts:
-//   1. antiViewOnce() is now called BEFORE the `fromMe` guard so the bot owner's
-//      own replies (fromMe=true) are not silently dropped before we can inspect them.
-//   2. Dual trigger: auto-capture when view-once ARRIVES, plus reply-triggered capture.
-//   3. Removed fragile createRequire(pino) — replaced with inline no-op logger.
+// ANTI-VIEW ONCE BACKGROUND HANDLER
+// Auto-captures incoming view-once messages to self-chat and saves
+// passive replies to view-once media.
+// Note: Explicit commands (e.g. !vv, .vv, !viewonce) are handled by the viewonce command.
 // ════════════════════════════════════════════════════════════════════════════
-
-// Inline silent logger — avoids dynamic require(pino) which could fail in ESM
-const _silent = {
-  level: 'silent',
-  info:  () => {},
-  warn:  () => {},
-  error: () => {},
-  debug: () => {},
-  trace: () => {},
-  child: function () { return this; },
-};
-
-/**
- * Exact port of angiegangsta-x lib/utils.js → unwrapMessage()
- * Strips view-once / ephemeral / documentWithCaption wrapper and returns inner message.
- */
-function unwrapMessage(message) {
-  if (!message) return null;
-  const inner =
-    message.viewOnceMessage?.message              ||
-    message.viewOnceMessageV2?.message            ||
-    message.viewOnceMessageV2Extension?.message   ||
-    message.ephemeralMessage?.message             ||
-    message.documentWithCaptionMessage?.message   ||
-    message.editedMessage?.message                ||
-    null;
-  return inner || message;
-}
-
-/**
- * Exact port of angiegangsta-x lib/utils.js → extractMediaType()
- * Returns { type, node, holder } or null.
- */
-function extractMediaType(message) {
-  const m = unwrapMessage(message);
-  if (!m) return null;
-  if (m.imageMessage)    return { type: 'image',    node: m.imageMessage,    holder: m };
-  if (m.videoMessage)    return { type: 'video',    node: m.videoMessage,    holder: m };
-  if (m.audioMessage)    return { type: 'audio',    node: m.audioMessage,    holder: m };
-  if (m.stickerMessage)  return { type: 'sticker',  node: m.stickerMessage,  holder: m };
-  if (m.documentMessage) return { type: 'document', node: m.documentMessage, holder: m };
-  if (m.documentWithCaptionMessage?.message?.documentMessage) {
-    return { type: 'document', node: m.documentWithCaptionMessage.message.documentMessage, holder: m };
-  }
-  return null;
-}
-
-/**
- * Download media and send to bot's self-chat JID.
- * @param {object} target  - Baileys message object: { key, message }
- * @param {object} sock    - Baileys socket
- * @param {object} origMsg - Original incoming msg (for caption info)
- */
-async function downloadAndForwardToSelf(sock, target, origMsg) {
-  const info = extractMediaType(target.message);
-  if (!info) {
-    logger.warn('[AntiViewOnce] extractMediaType returned null — unsupported media type');
-    return;
-  }
-
-  logger.info({ type: info.type, remoteJid: origMsg.key.remoteJid }, '[AntiViewOnce] downloading media');
-
-  const buffer = await downloadMediaMessage(
-    target,
-    'buffer',
-    {},
-    { logger: _silent, reuploadRequest: sock.updateMediaMessage }
-  );
-
-  if (!buffer || buffer.length === 0) {
-    logger.warn('[AntiViewOnce] buffer empty — media may have expired on WhatsApp servers');
-    return;
-  }
-
-  // Resolve self-chat JID (strip :device suffix e.g. 628xxx:12@s.whatsapp.net)
-  const selfJid = sock.user?.id;
-  if (!selfJid) {
-    logger.warn('[AntiViewOnce] sock.user.id not ready yet');
-    return;
-  }
-  const selfBareJid = selfJid.includes(':')
-    ? selfJid.split(':')[0] + '@s.whatsapp.net'
-    : selfJid;
-
-  const senderName = origMsg.pushName
-    || (origMsg.key.participant || origMsg.key.remoteJid).split('@')[0];
-  const chatLabel = origMsg.key.remoteJid.endsWith('@g.us')
-    ? origMsg.key.remoteJid
-    : 'DM';
-
-  // Send payload — mirrors exact angiegangsta-x vvHandler() payload
-  if (info.type === 'video') {
-    await sock.sendMessage(selfBareJid, {
-      video: Buffer.from(buffer),
-      caption: `🔓 *view once unlocked*\n👤 from: ${senderName}\n💬 chat: ${chatLabel}`,
-    });
-  } else if (info.type === 'audio') {
-    await sock.sendMessage(selfBareJid, {
-      audio:    Buffer.from(buffer),
-      mimetype: info.node?.mimetype || 'audio/mpeg',
-      ptt:      info.node?.ptt === true,
-    });
-  } else {
-    // image (and sticker fallback)
-    await sock.sendMessage(selfBareJid, {
-      image:   Buffer.from(buffer),
-      caption: `🔓 *view once unlocked*\n> ${senderName}`,
-    });
-  }
-
-  logger.info('[AntiViewOnce] forwarded to self chat ✓');
-}
-
-/**
- * Main anti-view-once gate — called BEFORE fromMe guard.
- *
- * Trigger A (auto-capture): incoming msg IS a view-once  → save it
- * Trigger B (reply-based):  incoming msg REPLIES to view-once → save it
- *
- * Both triggers work for fromMe=true (owner's own replies) because this
- * function runs before the fromMe early-return in handleIncomingMessage.
- */
 async function antiViewOnce(sock, msg) {
   try {
     const rawMsg = msg.message || {};
 
-    // ── Trigger A: the message itself IS a view-once ─────────────────
-    // Fires when someone sends a view-once to us (fromMe=false).
-    // Mirrors reference: const unwrapped = msg.viewOnceMessage || msg.viewOnceMessageV2 ...
-    const directWrapper =
-      rawMsg.viewOnceMessage            ||
-      rawMsg.viewOnceMessageV2          ||
-      rawMsg.viewOnceMessageV2Extension ||
-      null;
+    // ── Trigger A: Incoming message ITSELF is a view-once ─────────────
+    if (isViewOnceMessage(rawMsg)) {
+      const info = extractMediaType(rawMsg);
+      if (!info) return;
 
-    if (directWrapper) {
-      const innerMsg = directWrapper.message;
-      if (innerMsg) {
-        const target = {
-          key:     msg.key,
-          message: unwrapMessage(rawMsg), // the inner { imageMessage / videoMessage / audioMessage }
-        };
-        await downloadAndForwardToSelf(sock, target, msg);
+      const buffer = await downloadMediaBuffer(info, msg, sock);
+      if (!buffer) return;
+
+      const selfBareJid = resolveSelfBareJid(sock);
+      if (!selfBareJid) return;
+
+      const senderName = msg.pushName || (msg.key.participant || msg.key.remoteJid).split('@')[0];
+      const chatLabel = msg.key.remoteJid.endsWith('@g.us') ? msg.key.remoteJid : 'DM';
+      const caption = `🔓 *view once unlocked*\n👤 from: ${senderName}\n💬 chat: ${chatLabel}`;
+
+      if (info.type === 'video') {
+        await sock.sendMessage(selfBareJid, { video: buffer, caption });
+      } else if (info.type === 'audio') {
+        await sock.sendMessage(selfBareJid, {
+          audio: buffer,
+          mimetype: info.node?.mimetype || 'audio/ogg; codecs=opus',
+          ptt: info.node?.ptt === true
+        });
+      } else {
+        await sock.sendMessage(selfBareJid, { image: buffer, caption });
       }
-      return; // handled — don't fall through to reply check
+      logger.info('[AntiViewOnce] auto-captured incoming view-once to self chat ✓');
+      return;
     }
 
-    // ── Trigger B: message is a REPLY to a view-once ─────────────────
-    // Fires when anyone (including the owner, fromMe=true) replies to a view-once.
-    // Mirrors: downloadMessageMedia(sock, m, { preferQuoted: true }) in utils.js
-    const ctx =
+    // ── Trigger B: Reply to a view-once (passive, non-command) ────────
+    const contextInfo =
       rawMsg.extendedTextMessage?.contextInfo ||
-      rawMsg.imageMessage?.contextInfo        ||
-      rawMsg.videoMessage?.contextInfo        ||
-      rawMsg.audioMessage?.contextInfo        ||
-      rawMsg.stickerMessage?.contextInfo      ||
-      rawMsg.documentMessage?.contextInfo     ||
+      rawMsg.imageMessage?.contextInfo ||
+      rawMsg.videoMessage?.contextInfo ||
+      rawMsg.audioMessage?.contextInfo ||
+      rawMsg.stickerMessage?.contextInfo ||
+      rawMsg.documentMessage?.contextInfo ||
       null;
 
-    if (!ctx?.quotedMessage) return; // not a reply at all
+    if (!contextInfo?.quotedMessage) return;
 
-    const quotedMsg = ctx.quotedMessage;
-    const isViewOnce = !!(
-      quotedMsg.viewOnceMessage            ||
-      quotedMsg.viewOnceMessageV2          ||
-      quotedMsg.viewOnceMessageV2Extension
-    );
-    if (!isViewOnce) return; // replied-to message is not a view-once
+    if (!isViewOnceMessage(contextInfo.quotedMessage)) return;
 
-    // Unwrap the view-once wrapper to get { imageMessage / videoMessage / audioMessage }
-    const info = extractMediaType(quotedMsg);
+    // Check if this is an explicit view-once command (e.g. !vv, .vv, vv, !viewonce, etc.)
+    // If so, let the dedicated viewonce command handle it in-chat.
+    const body = (
+      rawMsg.conversation ||
+      rawMsg.extendedTextMessage?.text ||
+      rawMsg.imageMessage?.caption ||
+      ''
+    ).trim();
+    const firstWord = body.replace(/^[!.\/]/, '').trim().split(/\s+/)[0]?.toLowerCase();
+    const isExplicitVVCommand = ['vv', 'vo', 'rvo', 'viewonce', 'antiviewonce', 'readviewonce'].includes(firstWord);
+    if (isExplicitVVCommand) {
+      return;
+    }
+
+    const info = extractMediaType(contextInfo.quotedMessage);
     if (!info) return;
 
-    // Build target — exact same structure as angiegangsta-x utils.js downloadMessageMedia()
-    const target = {
+    const fallbackTarget = {
       key: {
-        remoteJid:   msg.key.remoteJid,
-        id:          ctx.stanzaId,
-        participant: ctx.participant,
-        fromMe:      false,
+        remoteJid: msg.key.remoteJid,
+        id: contextInfo.stanzaId,
+        participant: contextInfo.participant,
+        fromMe: false
       },
-      message: info.holder,
+      message: info.holder
     };
 
-    await downloadAndForwardToSelf(sock, target, msg);
+    const buffer = await downloadMediaBuffer(info, fallbackTarget, sock);
+    if (!buffer) return;
+
+    const selfBareJid = resolveSelfBareJid(sock);
+    if (!selfBareJid) return;
+
+    const senderName = msg.pushName || (contextInfo.participant || msg.key.remoteJid).split('@')[0];
+    const chatLabel = msg.key.remoteJid.endsWith('@g.us') ? msg.key.remoteJid : 'DM';
+    const caption = `🔓 *view once unlocked*\n👤 from: ${senderName}\n💬 chat: ${chatLabel}`;
+
+    if (info.type === 'video') {
+      await sock.sendMessage(selfBareJid, { video: buffer, caption });
+    } else if (info.type === 'audio') {
+      await sock.sendMessage(selfBareJid, {
+        audio: buffer,
+        mimetype: info.node?.mimetype || 'audio/ogg; codecs=opus',
+        ptt: info.node?.ptt === true
+      });
+    } else {
+      await sock.sendMessage(selfBareJid, { image: buffer, caption });
+    }
+    logger.info('[AntiViewOnce] reply-triggered view-once saved to self chat ✓');
 
   } catch (err) {
     logger.error({ err }, '[AntiViewOnce] unhandled error');
